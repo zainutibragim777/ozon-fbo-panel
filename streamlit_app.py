@@ -581,5 +581,118 @@ with tab_warehouses:
                 "ozon_supply_preflight.csv", "text/csv", key="preflight_download",
             )
 
+
+        st.divider()
+        st.subheader("🧪 Технический черновик Ozon")
+        st.caption("Используем актуальный /v1/draft/multi-cluster/create. Это операция записи только технического черновика, НЕ создание поставки.")
+        st.warning("Черновик живёт около 30 минут, не отображается в кабинете и не резервирует дату. Проверяем фактические количества, не уменьшаем план.")
+        valid_preflight = ready_local and len(matches) <= 20 and bool(matched_df["ID кластера Ozon"].astype(str).str.fullmatch(r"[0-9]+").all())
+        expected_total = total_to_supply
+        draft_signature = (
+            source_label,
+            tuple((str(row["ID кластера Ozon"]), int(row["Отправить, шт."])) for _, row in matched_df.iterrows()),
+            str(new_product_sku).strip(),
+            str(origin_matches[0]["warehouse_id"]) if origin_ok else "",
+        )
+        if st.button(
+            "Создать ТОЛЬКО технический черновик (без поставки)",
+            key="create_technical_draft",
+            disabled=not valid_preflight,
+            type="primary",
+        ):
+            try:
+                origin_wh = origin_matches[0]
+                origin_type = str(origin_wh.get("warehouse_type", ""))
+                allowed_types = {
+                    "WAREHOUSE_TYPE_SORTING_CENTER": "SORTING_CENTER",
+                    "WAREHOUSE_TYPE_DELIVERY_POINT": "DELIVERY_POINT",
+                    "WAREHOUSE_TYPE_ORDERS_RECEIVING_POINT": "ORDERS_RECEIVING_POINT",
+                    "WAREHOUSE_TYPE_CROSS_DOCK": "CROSS_DOCK",
+                }
+                if origin_type not in allowed_types:
+                    raise ValueError("Неизвестный тип точки отгрузки Ozon: " + origin_type)
+                if len(matches) > 20 or not valid_preflight:
+                    raise ValueError("Не пройдена предварительная проверка.")
+                post_body = {
+                    "clusters_info": [
+                        {
+                            "macrolocal_cluster_id": int(row["ID кластера Ozon"]),
+                            "items": [{"sku": int(new_product_sku.strip()), "quantity": int(row["Отправить, шт."])}],
+                        }
+                        for _, row in matched_df.iterrows()
+                    ],
+                    "deletion_sku_mode": "FULL",
+                    "delivery_info": {
+                        "drop_off_warehouse": {
+                            "warehouse_id": int(origin_wh["warehouse_id"]),
+                            "warehouse_type": allowed_types[origin_type],
+                        },
+                        "type": "DROPOFF",
+                    },
+                }
+                created = ozon_reference_request("/v1/draft/multi-cluster/create", post_body)
+                if not isinstance(created, dict):
+                    raise ValueError("Ozon вернул неожиданный ответ.")
+                draft_id = int(created.get("draft_id") or 0)
+                errors = created.get("errors") or []
+                st.session_state.technical_draft_id = draft_id if draft_id > 0 else None
+                st.session_state.technical_draft_signature = draft_signature
+                st.session_state.technical_draft_errors = errors
+                st.session_state.pop("technical_draft_info", None)
+                if draft_id > 0:
+                    st.success(f"Ozon создал технический черновик №{draft_id} для {len(matches)} кластеров / {expected_total} шт. Поставка НЕ создана.")
+                else:
+                    st.error("Ozon не выдал ID черновика. Поставка не создана.")
+                if errors:
+                    st.warning("Ozon сообщил об ограничениях: " + json.dumps(errors, ensure_ascii=False)[:2500])
+            except urllib.error.HTTPError as error:
+                response_text = error.read(1500).decode("utf-8", errors="replace")
+                st.error(f"Ozon отклонил черновик: HTTP {error.code}. " + response_text)
+            except Exception as error:
+                st.error(f"Черновик не создан: {error}")
+        if st.session_state.get("technical_draft_signature") == draft_signature:
+            current_draft = st.session_state.get("technical_draft_id")
+            if current_draft:
+                st.info(f"Технический черновик №{current_draft}. Для проверки ответа нажми кнопку ниже, пока он не истёк.")
+                if st.button("Проверить технический черновик в Ozon", key="check_technical_draft"):
+                    try:
+                        info = ozon_reference_request("/v2/draft/create/info", {"draft_id": int(current_draft)})
+                        if not isinstance(info, dict):
+                            raise ValueError("Неожиданный формат ответа.")
+                        st.session_state.technical_draft_info = info
+                    except urllib.error.HTTPError as error:
+                        st.error(f"Ozon вернул HTTP {error.code} при проверке черновика.")
+                    except Exception as error:
+                        st.error(str(error))
+                if "technical_draft_info" in st.session_state:
+                    info = st.session_state.technical_draft_info
+                    st.write("Статус Ozon:", str(info.get("status", "неизвестен")))
+                    if info.get("errors"):
+                        st.warning("Ошибки Ozon: " + json.dumps(info["errors"], ensure_ascii=False)[:3000])
+                    warehouses_output = []
+                    for item in info.get("clusters", []) or []:
+                        if not isinstance(item, dict):
+                            continue
+                        whs = item.get("warehouses", []) or []
+                        if not whs:
+                            warehouses_output.append({
+                                "Кластер": item.get("cluster_name", ""),
+                                "Склад Ozon": "Нет доступных вариантов",
+                                "ID склада": "", "Статус": "Не подтверждено",
+                            })
+                        for wh in whs:
+                            storage = wh.get("storage_warehouse") or {}
+                            avail = wh.get("availability_status") or {}
+                            warehouses_output.append({
+                                "Кластер": item.get("cluster_name", ""),
+                                "Склад Ozon": storage.get("name", ""),
+                                "ID склада": storage.get("warehouse_id", ""),
+                                "Статус": avail.get("state", "Неизвестно"),
+                                "Причина": avail.get("invalid_reason", ""),
+                            })
+                    if warehouses_output:
+                        st.dataframe(pd.DataFrame(warehouses_output), hide_index=True, use_container_width=True)
+                    st.caption("Этот ответ не подтверждает лимиты в штуках или свободный таймслот. Ничего автоматически не урезаем и не создаём.")
+
     elif not plans:
         st.caption("Рассчитай распределение во вкладке «📊 Распределение», чтобы увидеть соответствие кластеров.")
