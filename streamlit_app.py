@@ -443,7 +443,37 @@ with tab_warehouses:
                 if not isinstance(cluster_list, list):
                     raise ValueError("Ozon вернул неожиданный формат кластеров.")
                 all_clusters.extend({**item, "_requested_cluster_type": cluster_type} for item in cluster_list if isinstance(item, dict))
-            st.session_state.fbo_cluster_reference = all_clusters
+            macro_response = ozon_reference_request("/v2/cluster/list", {})
+            macro_result = macro_response.get("result", []) if isinstance(macro_response, dict) else []
+            if not isinstance(macro_result, list) or not macro_result:
+                raise ValueError("Ozon не вернул макролокальные кластеры /v2/cluster/list.")
+            def clean_cluster_name(value):
+                return " ".join(str(value).strip().casefold().replace("ё", "е").split())
+            macro_by_name = {}
+            for record in macro_result:
+                if not isinstance(record, dict):
+                    continue
+                detail = (record.get("data") or {}).get("macrolocal_cluster") or {}
+                name = str(detail.get("name") or "").strip()
+                macro_id = record.get("macrolocal_cluster_id")
+                if name and macro_id is not None:
+                    macro_by_name[clean_cluster_name(name)] = {
+                        "macrolocal_cluster_id": macro_id,
+                        "country": str((detail.get("country") or {}).get("name") or ""),
+                    }
+            enriched_clusters = []
+            for item in all_clusters:
+                name = str(item.get("name") or "").strip()
+                macro = macro_by_name.get(clean_cluster_name(name), {})
+                # v1 ID belongs to a legacy cluster and MUST NOT be sent as macrolocal_cluster_id.
+                candidate = item.get("macrolocal_cluster_id") or macro.get("macrolocal_cluster_id")
+                enriched_clusters.append({
+                    **item,
+                    "_macrolocal_cluster_id": candidate,
+                    "_country": macro.get("country", ""),
+                    "_macro_id_verified": candidate is not None,
+                })
+            st.session_state.fbo_cluster_reference = enriched_clusters
             st.session_state.fbo_cluster_error = None
         except urllib.error.HTTPError as err:
             st.session_state.fbo_cluster_error = f"Кластеры: Ozon вернул HTTP {err.code}."
@@ -470,7 +500,8 @@ with tab_warehouses:
         clusters_ref = st.session_state.fbo_cluster_reference
         cluster_rows = [
             {"Кластер Ozon": str(x.get("name", "")), "ID кластера": str(x.get("id", "")),
-             "Тип": "СНГ" if x.get("_requested_cluster_type") == "CLUSTER_TYPE_CIS" else "Россия"}
+             "Макролокальный ID": str(x.get("_macrolocal_cluster_id") or ""),
+             "Страна": x.get("_country") or ("СНГ" if x.get("_requested_cluster_type") == "CLUSTER_TYPE_CIS" else "Россия")}
             for x in clusters_ref if isinstance(x, dict) and x.get("name")
         ]
         st.success(f"Получено кластеров Ozon: {len(cluster_rows)}")
@@ -516,14 +547,14 @@ with tab_warehouses:
             matches.append({
                 "Кластер из плана": name,
                 "Кластер Ozon": str(hit.get("name", "")) if hit else "",
-                "ID кластера Ozon": str(hit.get("id", "")) if hit else "",
+                "ID кластера Ozon": str(hit.get("_macrolocal_cluster_id") or "") if hit else "",
                 "Отправить, шт.": int(row["Отправить, шт."]),
-                "Статус": "Совпало" if hit else "Не сопоставлено",
+                "Статус": "Совпало" if hit and hit.get("_macrolocal_cluster_id") else "Нет макролокального ID",
             })
         matched_df = pd.DataFrame(matches)
         st.dataframe(matched_df, hide_index=True, use_container_width=True)
         matched = sum(item["Статус"] == "Совпало" for item in matches)
-        st.info(f"Автоматически сопоставлено {matched} из {len(matches)} кластеров. Несовпавшие нельзя передавать в заявку без уточнения.")
+        st.info(f"Проверено макролокальных ID: {matched} из {len(matches)}. Отсутствующие ID не передаются в черновик.")
         st.download_button(
             "Скачать сопоставление CSV", matched_df.to_csv(index=False).encode("utf-8-sig"),
             "ozon_cluster_mapping.csv", "text/csv", key="download_cluster_mapping",
@@ -640,7 +671,7 @@ with tab_warehouses:
                 st.session_state.technical_draft_errors = errors
                 st.session_state.pop("technical_draft_info", None)
                 if draft_id > 0:
-                    st.success(f"Ozon создал технический черновик №{draft_id} для {len(matches)} кластеров / {expected_total} шт. Поставка НЕ создана.")
+                    st.success(f"Ozon выдал ID технического черновика №{draft_id} для {len(matches)} кластеров / {expected_total} шт. Поставка НЕ создана.")
                 else:
                     st.error("Ozon не выдал ID черновика. Поставка не создана.")
                 if errors:
