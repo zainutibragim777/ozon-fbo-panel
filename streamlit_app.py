@@ -163,19 +163,23 @@ with tab_plan:
                 geo.columns = ["Кластер", "Доля, %"]
                 geo["Кластер"] = geo["Кластер"].fillna("").astype(str).str.strip()
                 def parse_percent(value):
+                    # Ozon exports numeric percentage cells as decimal fractions:
+                    # 0.201 means 20.1%. Its row 6 is a text description, not data.
                     if pd.isna(value):
                         return float("nan")
-                    if isinstance(value, str):
-                        v = value.replace(" ", "").replace("\\xa0", "").replace(",", ".")
-                        if v.endswith("%"):
-                            return float(v[:-1])
-                        number = float(v)
-                    else:
-                        number = float(value)
-                    return number * 100 if 0 <= number <= 1 else number
+                    try:
+                        if isinstance(value, str):
+                            v = value.replace(" ", "").replace("\\xa0", "").replace(",", ".").strip()
+                            if v.endswith("%"):
+                                return float(v[:-1])
+                            number = float(v)
+                        else:
+                            number = float(value)
+                        return number * 100 if 0 <= number <= 1 else number
+                    except (TypeError, ValueError):
+                        return float("nan")
                 geo["Доля, %"] = pd.to_numeric(
-                    geo["Доля, %"].map(lambda v: parse_percent(v) if str(v).strip() not in ("", "nan") else float("nan")),
-                    errors="coerce",
+                    geo["Доля, %"].map(parse_percent), errors="coerce"
                 )
                 geo = geo[(geo["Кластер"] != "") & geo["Доля, %"].notna()]
             except (ValueError, KeyError, IndexError) as error:
