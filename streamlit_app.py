@@ -1,9 +1,10 @@
-"""Личная панель планирования Ozon FBO. Без запросов к API и создания заявок."""
+"""Личная панель планирования Ozon FBO. API только для чтения, без создания заявок."""
 import hmac
 import math
 import json
 import urllib.request
 import urllib.error
+from datetime import date, timedelta
 import pandas as pd
 import streamlit as st
 
@@ -67,7 +68,7 @@ if st.button("Выйти"):
     st.session_state.logged_in = False
     st.rerun()
 
-tab_plan, tab_stocks, tab_rules, tab_warehouses = st.tabs(["📊 Распределение", "📦 Остатки Ozon", "⚙️ Правила", "🚚 Склады"])
+tab_plan, tab_stocks, tab_sales, tab_rules, tab_warehouses = st.tabs(["📊 Распределение", "📦 Остатки Ozon", "📈 Продажи Ozon", "⚙️ Правила", "🚚 Склады"])
 with tab_plan:
     uploaded = st.file_uploader("Загрузи Excel или CSV с продажами и остатками", type=["xlsx", "csv"])
     if uploaded is not None:
@@ -170,6 +171,67 @@ with tab_stocks:
             st.dataframe(stock_df, use_container_width=True, hide_index=True)
             st.download_button("Скачать остатки CSV", stock_df.to_csv(index=False).encode("utf-8-sig"), "ozon_fbo_stocks.csv", "text/csv")
         st.caption("Эти остатки пока не подставляются в расчёт: сначала проверим соответствие складов кластерам и товаров артикулам.")
+
+with tab_sales:
+    st.subheader("Продажи Ozon по товарам")
+    st.caption("За выбранный период, в штуках. Только чтение — поставки не создаются.")
+    sales_days = st.selectbox("Период", [7, 14, 28], index=2, format_func=lambda n: f"Последние {n} завершённых дней")
+    if not client_id or not api_key:
+        st.warning("Добавь OZON_CLIENT_ID и OZON_API_KEY в Streamlit Secrets.")
+    elif st.button("🔄 Получить продажи из Ozon", type="primary"):
+        try:
+            date_to = date.today() - timedelta(days=1)
+            date_from = date_to - timedelta(days=sales_days - 1)
+            sales_rows = []
+            limit = 1000
+            for offset in range(0, 30000, limit):
+                body = {
+                    "date_from": date_from.isoformat(),
+                    "date_to": date_to.isoformat(),
+                    "metrics": ["ordered_units"],
+                    "dimension": ["sku"],
+                    "filters": [],
+                    "sort": [],
+                    "limit": limit,
+                    "offset": offset,
+                }
+                request = urllib.request.Request(
+                    "https://api-seller.ozon.ru/v1/analytics/data",
+                    data=json.dumps(body).encode("utf-8"),
+                    headers={"Client-Id": client_id, "Api-Key": api_key, "Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urllib.request.urlopen(request, timeout=30) as response:
+                    payload = json.load(response)
+                result = payload.get("result", {}) if isinstance(payload, dict) else {}
+                page = result.get("data", []) if isinstance(result, dict) else []
+                if not isinstance(page, list):
+                    raise ValueError("Неожиданный формат ответа Ozon")
+                for item in page:
+                    dimensions = item.get("dimensions", [])
+                    sku = dimensions[0].get("id", "") if dimensions else ""
+                    label = dimensions[0].get("name", "") if dimensions else ""
+                    metrics = item.get("metrics", [])
+                    units = metrics[0] if metrics else 0
+                    sales_rows.append({"SKU": str(sku), "Товар": label, "Продано, шт.": units, "В день, шт.": round(float(units) / sales_days, 2)})
+                if len(page) < limit:
+                    break
+            st.session_state.ozon_sales_rows = sales_rows
+            st.session_state.ozon_sales_period = (date_from.isoformat(), date_to.isoformat())
+            st.session_state.ozon_sales_truncated = len(page) == limit
+        except urllib.error.HTTPError as error:
+            st.error(f"Ozon вернул HTTP {error.code}. Проверь права API-ключа.")
+        except Exception:
+            st.error("Не удалось получить продажи. Попробуй позже.")
+    if "ozon_sales_rows" in st.session_state:
+        sales_df = pd.DataFrame(st.session_state.ozon_sales_rows, columns=["SKU", "Товар", "Продано, шт.", "В день, шт."])
+        start, end = st.session_state.ozon_sales_period
+        st.success(f"Получено товаров: {len(sales_df)}. Период: {start} — {end}")
+        if st.session_state.get("ozon_sales_truncated"):
+            st.warning("Достигнут предел выгрузки: данные могут быть неполными.")
+        st.dataframe(sales_df, use_container_width=True, hide_index=True)
+        st.download_button("Скачать продажи CSV", sales_df.to_csv(index=False).encode("utf-8-sig"), "ozon_sales.csv", "text/csv")
+        st.info("Пока это продажи по SKU, без разбивки по кластерам. Для распределения поставок нужна отдельная проверка продаж по кластерам и соответствия остатков.")
 
 with tab_rules:
     st.write("Минимум 19 шт. **каждого товара** на кластер.")
