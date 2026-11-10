@@ -208,42 +208,33 @@ with tab_plan:
             eligible = geo.loc[~excluded].copy()
             st.caption(f"Кластеров в отчёте: {len(geo)}. В распределении: {len(eligible)}. Исключены доли ниже 0,5% и Самара.")
             qty = st.number_input("Количество для метода 2", min_value=0, value=1650, step=1, key="category_geo_qty")
-            st.caption("Укажи реальные остатки FBO. Ноль означает, что остаток в кластере неизвестен или равен нулю — проверь перед расчётом.")
-            stocks = eligible[["Кластер", "Доля, %"]].copy()
-            stocks["Остаток FBO, шт."] = 0
-            stocks = st.data_editor(
-                stocks, hide_index=True, use_container_width=True, disabled=["Кластер", "Доля, %"],
-                column_config={"Остаток FBO, шт.": st.column_config.NumberColumn(min_value=0,step=1)},
-                key="category_geo_stock_table_v2",
-            )
+            st.caption("Метод для новых товаров: остатки FBO не нужны. Распределяем только по долям рынка категории.")
             if st.button(
-                "Рассчитать по категории", type="primary", key="category_geo_calculate_v2",
+                "Рассчитать по категории", type="primary", key="category_geo_calculate_v3",
                 disabled=share_total < 99 or share_total > 100.2 or eligible.empty,
             ):
-                vals = pd.to_numeric(stocks["Остаток FBO, шт."],errors="coerce")
-                if vals.isna().any() or (vals < 0).any() or (vals % 1 != 0).any():
-                    st.error("Остатки должны быть целыми неотрицательными числами.")
-                else:
-                    try:
-                        plan = calculate([
-                            (row["Кластер"], float(row["Доля, %"]), float(stock))
-                            for (_, row), stock in zip(stocks.iterrows(), vals)
-                        ], int(qty), 19)
-                        result = stocks[stocks["Кластер"].isin(plan)].copy()
-                        result["Отправить, шт."] = result["Кластер"].map(plan).astype(int)
-                        result = result.sort_values("Отправить, шт.",ascending=False)
-                        st.session_state.category_geo_result = result
-                    except ValueError as error:
-                        st.error(str(error))
-            if "category_geo_result" in st.session_state:
-                result = st.session_state.category_geo_result
+                try:
+                    plan = calculate([
+                        (row["Кластер"], float(row["Доля, %"]), 0.0)
+                        for _, row in eligible.iterrows()
+                    ], int(qty), 19)
+                    result = eligible[eligible["Кластер"].isin(plan)][["Кластер", "Доля, %"]].copy()
+                    result["Отправить, шт."] = result["Кластер"].map(plan).astype(int)
+                    result = result.sort_values("Отправить, шт.", ascending=False)
+                    st.session_state.category_geo_result_new = result
+                    st.session_state.category_geo_result_qty_new = int(qty)
+                except ValueError as error:
+                    st.session_state.pop("category_geo_result_new", None)
+                    st.error(str(error))
+            if "category_geo_result_new" in st.session_state:
+                result = st.session_state.category_geo_result_new
                 st.dataframe(result, hide_index=True, use_container_width=True)
                 st.metric("Распределено, шт.", int(result["Отправить, шт."].sum()))
                 st.download_button(
                     "Скачать план по категории CSV", result.to_csv(index=False).encode("utf-8-sig"),
-                    "ozon_category_allocation.csv", "text/csv", key="category_download_v2",
+                    "ozon_category_allocation.csv", "text/csv", key="category_download_v3",
                 )
-                st.warning("План предварительный. При изменении исходных данных нажми «Рассчитать» снова. Заявки не создаются.")
+                st.warning("План предварительный, без проверки складов. При изменении исходных данных нажми «Рассчитать» снова. Заявки не создаются.")
         except ValueError as error:
             st.error(str(error))
 
