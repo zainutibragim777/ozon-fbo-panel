@@ -464,6 +464,11 @@ with tab_warehouses:
                 slot_summary = pd.DataFrame([{
                     "Кластер": item["name"],
                     "Количество, шт.": int(item["quantity"]),
+                    "Статус проверки": (
+                        "Слоты найдены" if item.get("status") == "SLOTS_FOUND"
+                        else "Ошибка API — повторяем" if item.get("status") in ("HTTP_ERROR", "ERROR")
+                        else str(item.get("status") or "Не проверен")
+                    ),
                     "Доступных интервалов": len(options_by_cluster.get(item["name"], [])),
                     "Первый подходящий": (
                         options_by_cluster[item["name"]][0][0].strftime("%d.%m %H:%M")
@@ -498,7 +503,7 @@ with tab_warehouses:
                             }
                             st.success("Выбор сохранён в панели. Поставка НЕ создана.")
                     else:
-                        st.warning("У этого кластера нет подтверждённых интервалов в выбранном диапазоне.")
+                        st.warning("Для этого кластера пока нет подтверждённых слотов в выбранном диапазоне. Если Ozon вернул ошибку API, это НЕ означает отсутствие свободных мест.")
                     if st.session_state.get("selected_cluster_slots"):
                         chosen_df = pd.DataFrame(list(st.session_state.selected_cluster_slots.values()))
                         st.subheader("Сохранённые варианты поставок")
