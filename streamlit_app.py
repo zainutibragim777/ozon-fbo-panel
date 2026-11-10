@@ -76,7 +76,7 @@ with tab_plan:
             quantity = st.number_input("Количество к распределению, шт.", min_value=0, value=1650, step=1)
             minimum = st.number_input("Минимум на один товар и кластер", min_value=1, value=19, step=1)
             clusters = sorted(df[cluster_col].dropna().astype(str).unique().tolist())
-            excluded = st.multiselect("Исключить кластеры", clusters, default=[c for c in clusters if "самара" in c.lower()])
+            excluded = st.multiselect("Исключить кластеры", clusters, default=[c for c in clusters if any(city in c.lower() for city in ("самара", "махачкала"))])
             if st.button("Рассчитать", type="primary"):
                 subset = df.loc[df[sku_col].astype(str) == sku, [cluster_col, daily_col, stock_col]].copy()
                 subset[daily_col] = pd.to_numeric(subset[daily_col], errors="coerce")
@@ -204,9 +204,9 @@ with tab_plan:
                     f"Введены не все кластеры: сумма долей {share_total:.1f}%, "
                     "должна быть около 100%. Расчёт заблокирован, чтобы не исказить распределение."
                 )
-            excluded = (geo["Доля, %"] < 0.5) | geo["Кластер"].str.contains("самара",case=False,na=False)
+            excluded = (geo["Доля, %"] < 0.5) | geo["Кластер"].str.contains("самара|махачкала",case=False,na=False)
             eligible = geo.loc[~excluded].copy()
-            st.caption(f"Кластеров в отчёте: {len(geo)}. В распределении: {len(eligible)}. Исключены доли ниже 0,5% и Самара.")
+            st.caption(f"Кластеров в отчёте: {len(geo)}. В распределении: {len(eligible)}. Исключены доли ниже 0,5%, Самара и Махачкала.")
             qty = st.number_input("Количество для метода 2", min_value=0, value=1650, step=1, key="category_geo_qty")
             st.caption("Метод для новых товаров: остатки FBO не нужны. Распределяем только по долям рынка категории.")
             if st.button(
@@ -282,10 +282,10 @@ with tab_plan:
                     raise ValueError(f"Проверь значения в столбце «{field}».")
             if (manual_table["Остаток FBO, шт."] % 1 != 0).any():
                 raise ValueError("Остатки должны быть целыми штуками.")
-            excluded_samara = manual_table["Кластер"].str.contains("самара", case=False, na=False)
-            if excluded_samara.any():
-                st.info("Самара исключена из расчёта автоматически.")
-            usable = manual_table.loc[~excluded_samara]
+            excluded_cities = manual_table["Кластер"].str.contains("самара|махачкала", case=False, na=False)
+            if excluded_cities.any():
+                st.info("Самара и Махачкала исключаются из расчёта автоматически.")
+            usable = manual_table.loc[~excluded_cities]
             rows = [(r["Кластер"], r["Продажи, шт./день"], r["Остаток FBO, шт."]) for _, r in usable.iterrows()]
             plan = calculate(rows, int(manual_quantity), 19)
             result = pd.DataFrame([{"Кластер": k, "Отправить, шт.": v} for k, v in sorted(plan.items(), key=lambda x: -x[1])])
@@ -411,7 +411,7 @@ with tab_sales:
 
 with tab_rules:
     st.write("Минимум 19 шт. **каждого товара** на кластер.")
-    st.write("Самара исключена по умолчанию.")
+    st.write("Самара и Махачкала исключены по умолчанию.")
     st.write("Учитываем среднесуточные продажи в штуках и остатки FBO.")
     st.write("Один город — один склад назначения. Товары объединяем, если склад принимает всё.")
     st.write("Количество не уменьшаем без нового согласования.")
@@ -574,12 +574,12 @@ with tab_warehouses:
         all_matched = matched == len(matches)
         minimum_ok = bool((matched_df["Отправить, шт."] >= 19).all())
         unique_clusters_ok = not matched_df["Кластер из плана"].duplicated().any()
-        no_samara = not matched_df["Кластер из плана"].str.contains("самара", case=False, na=False).any()
+        no_excluded_cities = not matched_df["Кластер из плана"].str.contains("самара|махачкала", case=False, na=False).any()
         st.write(f"План: **{total_to_supply} шт.**, кластеров: **{len(matches)}**.")
         st.write(f"{'✅' if all_matched else '❌'} Все кластеры имеют ID Ozon.")
         st.write(f"{'✅' if origin_ok else '❌'} Точка отгрузки Казань найдена однозначно.")
         st.write(f"{'✅' if minimum_ok else '❌'} Минимум 19 штук в каждом кластере.")
-        st.write(f"{'✅' if unique_clusters_ok and no_samara else '❌'} Нет повторов кластеров и Самары.")
+        st.write(f"{'✅' if unique_clusters_ok and no_excluded_cities else '❌'} Нет повторов кластеров, Самары и Махачкалы.")
         new_product_sku = st.text_input(
             "SKU товара для будущей проверки", value="2143372681", key="preflight_sku",
             help="Укажи реальный числовой SKU Ozon. Это поле ничего не отправляет в Ozon."
@@ -591,7 +591,7 @@ with tab_warehouses:
         )
         st.caption("Наличие свободного таймслота и лимиты для каждого кластера пока НЕ проверены.")
         numeric_sku = new_product_sku.strip().isdigit() and int(new_product_sku.strip()) > 0
-        ready_local = all_matched and origin_ok and minimum_ok and unique_clusters_ok and no_samara and numeric_sku
+        ready_local = all_matched and origin_ok and minimum_ok and unique_clusters_ok and no_excluded_cities and numeric_sku
         if ready_local:
             st.success("Локальная проверка пройдена. Следующий этап: проверка возможности создания черновика через Ozon API.")
         else:
