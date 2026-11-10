@@ -10,25 +10,6 @@ import streamlit as st
 
 st.set_page_config(page_title="Ozon FBO Control", page_icon="📦", layout="wide")
 
-def check_login():
-    try:
-        password = str(st.secrets.get("APP_PASSWORD", ""))
-    except Exception:
-        password = ""
-    if not password:
-        st.error("Панель закрыта: настрой APP_PASSWORD в Streamlit Secrets перед запуском.")
-        st.stop()
-    if not st.session_state.get("logged_in", False):
-        st.title("🔒 Личная панель Ozon FBO")
-        value = st.text_input("Пароль", type="password")
-        if st.button("Войти", type="primary"):
-            if hmac.compare_digest(value, password):
-                st.session_state.logged_in = True
-                st.rerun()
-            else:
-                st.error("Неверный пароль")
-        st.stop()
-
 def calculate(rows, quantity, minimum):
     """Balance post-supply days of cover, honoring FBO stock and per-cluster minimum."""
     active = [(str(c), float(d), float(s)) for c, d, s in rows if d > 0]
@@ -60,14 +41,9 @@ def calculate(rows, quantity, minimum):
         active = keep
     raise ValueError("Нет кластеров, проходящих минимальный порог. Требуется решение вручную.")
 
-check_login()
 st.title("📦 Ozon FBO Control")
-st.caption("Первая версия — только планирование. Реальные заявки не создаются.")
+st.caption("Панель без пароля: любой, у кого есть ссылка, может просматривать данные. Реальные заявки не создаются.")
 st.info("Постоянная точка отгрузки: КАЗАНЬ_АЭРОПОРТ_КРОССДОКИНГ")
-if st.button("Выйти"):
-    st.session_state.logged_in = False
-    st.rerun()
-
 tab_plan, tab_stocks, tab_sales, tab_rules, tab_warehouses = st.tabs(["📊 Распределение", "📦 Остатки Ozon", "📈 Продажи Ozon", "⚙️ Правила", "🚚 Склады"])
 with tab_plan:
     uploaded = st.file_uploader("Загрузи Excel или CSV с продажами и остатками", type=["xlsx", "csv"])
