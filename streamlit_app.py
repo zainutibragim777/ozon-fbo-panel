@@ -127,107 +127,145 @@ with tab_plan:
 
     st.divider()
     st.subheader("📊 Метод 2 — по географии продаж категории")
-    st.caption("Для новых товаров и случаев, когда продажи своего товара искажены наличием на складах.")
-    category_file = st.file_uploader(
-        "Загрузи Excel из Ozon → Аналитика категорий → География (галочка «Мой магазин» выключена)",
-        type=["xlsx"], key="category_geo_file",
+    st.caption("Распределение по долям продаж всей категории. Подходит и для новых товаров.")
+    geo_source = st.radio(
+        "Источник процентов", ["Ввести доли вручную", "Excel из Ozon"],
+        horizontal=True, key="geo_source",
     )
-    if category_file is not None:
+    geo = None
+    if geo_source == "Excel из Ozon":
+        category_file = st.file_uploader(
+            "Загрузи Excel: Аналитика категорий → География, «Мой магазин» выключен",
+            type=["xlsx"], key="category_geo_file",
+        )
+        if category_file is not None:
+            try:
+                raw = pd.read_excel(category_file, header=None)
+                if raw.shape[0] < 2 or raw.shape[1] < 2:
+                    raise ValueError(
+                        "Ozon выгрузил пустой отчёт (только период, без таблицы). "
+                        "Переключи «Источник процентов» на «Ввести доли вручную»."
+                    )
+                header_idx = next((
+                    i for i in range(min(len(raw), 40))
+                    if any("кластер доставки" in str(v).lower() for v in raw.iloc[i])
+                    and any("доля в категории" in str(v).lower() for v in raw.iloc[i])
+                ), None)
+                if header_idx is None:
+                    raise ValueError(
+                        "Не найдены столбцы «Кластер доставки» и «Доля в категории». "
+                        "Проверь тип отчёта или введи доли вручную."
+                    )
+                headers = raw.iloc[header_idx].astype(str).str.strip().tolist()
+                geo = raw.iloc[header_idx + 1:].copy()
+                geo.columns = headers
+                geo = geo[["Кластер доставки", "Доля в категории"]].copy()
+                geo.columns = ["Кластер", "Доля, %"]
+                geo["Кластер"] = geo["Кластер"].fillna("").astype(str).str.strip()
+                def parse_percent(value):
+                    if pd.isna(value):
+                        return float("nan")
+                    if isinstance(value, str):
+                        v = value.replace(" ", "").replace("\\xa0", "").replace(",", ".")
+                        if v.endswith("%"):
+                            return float(v[:-1])
+                        number = float(v)
+                    else:
+                        number = float(value)
+                    return number * 100 if 0 <= number <= 1 else number
+                geo["Доля, %"] = pd.to_numeric(
+                    geo["Доля, %"].map(lambda v: parse_percent(v) if str(v).strip() not in ("", "nan") else float("nan")),
+                    errors="coerce",
+                )
+                geo = geo[(geo["Кластер"] != "") & geo["Доля, %"].notna()]
+            except (ValueError, KeyError, IndexError) as error:
+                st.warning(str(error))
+                geo = None
+            except Exception:
+                st.error("Не удалось открыть Excel. Можно ввести доли вручную.")
+                geo = None
+    else:
+        st.info("Введи проценты из столбца «Доля в категории» в Ozon. Можешь добавлять строки.")
+        initial_geo = pd.DataFrame([
+            {"Кластер": "Москва, МО и Дальние регионы", "Доля, %": 20.1},
+            {"Кластер": "Ростов", "Доля, %": 9.2},
+            {"Кластер": "Санкт-Петербург и СЗО", "Доля, %": 8.9},
+            {"Кластер": "Новосибирск", "Доля, %": 5.7},
+            {"Кластер": "Казань", "Доля, %": 5.4},
+            {"Кластер": "Екатеринбург", "Доля, %": 5.2},
+            {"Кластер": "Воронеж", "Доля, %": 5.1},
+            {"Кластер": "Беларусь", "Доля, %": 4.5},
+            {"Кластер": "Ярославль", "Доля, %": 4.2},
+        ])
+        st.caption("Первые строки заполнены по твоему скриншоту. Это НЕ все кластеры: добавь остальные перед расчётом.")
+        geo = st.data_editor(
+            initial_geo, num_rows="dynamic", hide_index=True, use_container_width=True,
+            column_config={
+                "Кластер": st.column_config.TextColumn("Кластер", required=True),
+                "Доля, %": st.column_config.NumberColumn("Доля, %", min_value=0., max_value=100., format="%.2f"),
+            },
+            key="category_manual_shares",
+        )
+    if geo is not None:
         try:
-            raw_geo = pd.read_excel(category_file, header=None)
-            header_rows = [
-                idx for idx in range(min(len(raw_geo), 30))
-                if any("кластер доставки" in str(val).lower() for val in raw_geo.iloc[idx].tolist())
-                and any("доля в категории" in str(val).lower() for val in raw_geo.iloc[idx].tolist())
-            ]
-            if not header_rows:
-                raise ValueError("В файле не найдены столбцы «Кластер доставки» и «Доля в категории».")
-            header_index = header_rows[0]
-            headers = raw_geo.iloc[header_index].astype(str).str.strip().tolist()
-            geo = raw_geo.iloc[header_index + 1:].copy()
-            geo.columns = headers
-            geo = geo[["Кластер доставки", "Доля в категории"]].copy()
-            geo.columns = ["Кластер", "Доля"]
+            geo = geo.copy()
             geo["Кластер"] = geo["Кластер"].fillna("").astype(str).str.strip()
-            def parse_share(value):
-                if pd.isna(value):
-                    return float("nan")
-                if isinstance(value, str):
-                    value = value.strip().replace(" ", "").replace(",", ".")
-                    if value.endswith("%"):
-                        return float(value[:-1]) / 100
-                return float(value)
-            geo["Доля"] = geo["Доля"].map(parse_share)
-            geo = geo[(geo["Кластер"] != "") & geo["Доля"].notna()].copy()
-            if geo.empty or (geo["Доля"] < 0).any() or (geo["Доля"] > 1).any():
-                raise ValueError("В файле отсутствуют корректные доли кластеров.")
-            if geo["Кластер"].str.lower().duplicated().any():
-                raise ValueError("В файле повторяются названия кластеров.")
-            geo["Доля, %"] = (geo["Доля"] * 100).round(2)
-            excluded_low = geo["Доля"] < (0.005 - 1e-9)
-            excluded_samara = geo["Кластер"].str.contains("самара", case=False, na=False)
-            eligible = geo.loc[~(excluded_low | excluded_samara)].copy()
-            st.success(f"Прочитано кластеров: {len(geo)}. В расчёте: {len(eligible)}.")
-            st.caption(f"Исключено: {int(excluded_low.sum())} с долей ниже 0,5% и Самара (если есть в отчёте).")
-            if eligible.empty:
-                raise ValueError("Нет кластеров с долей не ниже 0,5%.")
-            category_qty = st.number_input(
-                "Сколько единиц распределить по категории", min_value=0, value=1650,
-                step=1, key="category_geo_qty",
+            geo = geo[geo["Кластер"] != ""]
+            geo["Доля, %"] = pd.to_numeric(geo["Доля, %"], errors="coerce")
+            if geo.empty or geo["Доля, %"].isna().any() or (geo["Доля, %"] < 0).any() or (geo["Доля, %"] > 100).any():
+                raise ValueError("Проверь названия кластеров и проценты от 0 до 100.")
+            if geo["Кластер"].str.casefold().duplicated().any():
+                raise ValueError("Повторяются названия кластеров.")
+            share_total = float(geo["Доля, %"].sum())
+            if share_total > 100.2:
+                raise ValueError(f"Сумма долей {share_total:.2f}% — больше 100%. Проверь проценты.")
+            if share_total < 99.0:
+                st.warning(
+                    f"Введены не все кластеры: сумма долей {share_total:.1f}%, "
+                    "должна быть около 100%. Расчёт заблокирован, чтобы не исказить распределение."
+                )
+            excluded = (geo["Доля, %"] < 0.5) | geo["Кластер"].str.contains("самара",case=False,na=False)
+            eligible = geo.loc[~excluded].copy()
+            st.caption(f"Кластеров в отчёте: {len(geo)}. В распределении: {len(eligible)}. Исключены доли ниже 0,5% и Самара.")
+            qty = st.number_input("Количество для метода 2", min_value=0, value=1650, step=1, key="category_geo_qty")
+            st.caption("Укажи реальные остатки FBO. Ноль означает, что остаток в кластере неизвестен или равен нулю — проверь перед расчётом.")
+            stocks = eligible[["Кластер", "Доля, %"]].copy()
+            stocks["Остаток FBO, шт."] = 0
+            stocks = st.data_editor(
+                stocks, hide_index=True, use_container_width=True, disabled=["Кластер", "Доля, %"],
+                column_config={"Остаток FBO, шт.": st.column_config.NumberColumn(min_value=0,step=1)},
+                key="category_geo_stock_table_v2",
             )
-            st.info("Внеси текущий остаток FBO для каждого кластера. Если указано 0, система считает, что товара там нет. Данные из файла категории остатков не содержат.")
-            stock_table = eligible[["Кластер", "Доля, %"]].copy()
-            stock_table["Остаток FBO, шт."] = 0
-            stock_table = st.data_editor(
-                stock_table, hide_index=True, use_container_width=True,
-                disabled=["Кластер", "Доля, %"],
-                column_config={
-                    "Доля, %": st.column_config.NumberColumn("Доля категории, %", format="%.2f%%"),
-                    "Остаток FBO, шт.": st.column_config.NumberColumn("Остаток FBO, шт.", min_value=0, step=1),
-                },
-                key="category_geo_stock_table",
-            )
-            if st.button("🐊 Рассчитать по долям категории", type="primary", key="category_geo_calculate"):
-                numeric_stock = pd.to_numeric(stock_table["Остаток FBO, шт."], errors="coerce")
-                if numeric_stock.isna().any() or (numeric_stock < 0).any() or (numeric_stock % 1 != 0).any():
-                    st.error("Остатки FBO должны быть целыми неотрицательными числами.")
+            if st.button(
+                "Рассчитать по категории", type="primary", key="category_geo_calculate_v2",
+                disabled=share_total < 99 or share_total > 100.2 or eligible.empty,
+            ):
+                vals = pd.to_numeric(stocks["Остаток FBO, шт."],errors="coerce")
+                if vals.isna().any() or (vals < 0).any() or (vals % 1 != 0).any():
+                    st.error("Остатки должны быть целыми неотрицательными числами.")
                 else:
                     try:
-                        # Target proportional inventory, accounting for existing FBO stock.
-                        rows = [
-                            (r["Кластер"], float(r["Доля"]), float(stock))
-                            for (_, r), stock in zip(eligible.iterrows(), numeric_stock)
-                        ]
-                        allocations = calculate(rows, int(category_qty), 19)
-                        out = eligible[eligible["Кластер"].isin(allocations)].copy()
-                        out["Остаток FBO, шт."] = out["Кластер"].map(dict(zip(stock_table["Кластер"], numeric_stock.astype(int))))
-                        out["Отправить, шт."] = out["Кластер"].map(allocations).astype(int)
-                        out = out[["Кластер", "Доля, %", "Остаток FBO, шт.", "Отправить, шт."]].sort_values(
-                            "Отправить, шт.", ascending=False
-                        )
-                        st.session_state.category_geo_result = out
-                        st.session_state.category_geo_name = category_file.name
-                        st.session_state.category_geo_quantity = int(category_qty)
+                        plan = calculate([
+                            (row["Кластер"], float(row["Доля, %"]), float(stock))
+                            for (_, row), stock in zip(stocks.iterrows(), vals)
+                        ], int(qty), 19)
+                        result = stocks[stocks["Кластер"].isin(plan)].copy()
+                        result["Отправить, шт."] = result["Кластер"].map(plan).astype(int)
+                        result = result.sort_values("Отправить, шт.",ascending=False)
+                        st.session_state.category_geo_result = result
                     except ValueError as error:
-                        st.session_state.pop("category_geo_result", None)
                         st.error(str(error))
-            if (
-                "category_geo_result" in st.session_state
-                and st.session_state.get("category_geo_name") == category_file.name
-                and st.session_state.get("category_geo_quantity") == int(category_qty)
-            ):
+            if "category_geo_result" in st.session_state:
                 result = st.session_state.category_geo_result
-                st.success(f"Распределено: {int(result['Отправить, шт.'].sum())} из {category_qty} шт.")
                 st.dataframe(result, hide_index=True, use_container_width=True)
+                st.metric("Распределено, шт.", int(result["Отправить, шт."].sum()))
                 st.download_button(
-                    "Скачать план по категории CSV",
-                    result.to_csv(index=False).encode("utf-8-sig"),
-                    "ozon_category_allocation.csv", "text/csv",
-                    key="category_geo_download",
+                    "Скачать план по категории CSV", result.to_csv(index=False).encode("utf-8-sig"),
+                    "ozon_category_allocation.csv", "text/csv", key="category_download_v2",
                 )
-                st.warning("Предварительный план. Остатки введены вручную. Проверка доступности складов, зарубежных направлений и создание заявок пока не подключены.")
-        except Exception as error:
-            st.error(f"Не удалось прочитать географию из Excel: {error}")
+                st.warning("План предварительный. При изменении исходных данных нажми «Рассчитать» снова. Заявки не создаются.")
+        except ValueError as error:
+            st.error(str(error))
 
     st.divider()
     st.subheader("🐊 Быстрый расчёт по кластерам")
