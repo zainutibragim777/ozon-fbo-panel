@@ -671,16 +671,43 @@ with tab_warehouses:
                 st.session_state.technical_draft_errors = errors
                 st.session_state.pop("technical_draft_info", None)
                 if draft_id > 0:
-                    st.success(f"Ozon выдал ID технического черновика №{draft_id} для {len(matches)} кластеров / {expected_total} шт. Поставка НЕ создана.")
+                    st.info(f"Ozon выдал ID технического черновика №{draft_id}. Доступность {expected_total} шт. ещё НЕ подтверждена. Поставка НЕ создана.")
                 else:
                     st.error("Ozon не выдал ID черновика. Поставка не создана.")
                 if errors:
                     st.warning("Ozon сообщил об ограничениях: " + json.dumps(errors, ensure_ascii=False)[:2500])
+                    show_cluster_limit_errors(errors)
             except urllib.error.HTTPError as error:
                 response_text = error.read(1500).decode("utf-8", errors="replace")
                 st.error(f"Ozon отклонил черновик: HTTP {error.code}. " + response_text)
             except Exception as error:
                 st.error(f"Черновик не создан: {error}")
+        def show_cluster_limit_errors(errors_data):
+            if not isinstance(errors_data, list):
+                return
+            names_by_id = {
+                str(row["ID кластера Ozon"]): (str(row["Кластер из плана"]), int(row["Отправить, шт."]))
+                for _, row in matched_df.iterrows()
+            }
+            flagged = []
+            for error in errors_data:
+                if not isinstance(error, dict):
+                    continue
+                if error.get("error_message") != "ITEMS_COUNT_MORE_THAN_MAX":
+                    continue
+                for cluster_id in error.get("macrolocal_cluster_ids", []) or []:
+                    cluster_name, quantity = names_by_id.get(str(cluster_id), ("Не найден в текущем плане", None))
+                    flagged.append({
+                        "Кластер": cluster_name,
+                        "Макролокальный ID": str(cluster_id),
+                        "Запрошено, шт.": quantity,
+                        "Ответ Ozon": "Количество превышает допустимый предел; точное максимальное количество неизвестно",
+                    })
+            if flagged:
+                st.error("Ozon сообщил о превышении лимита. Количество в плане НЕ изменено.")
+                st.dataframe(pd.DataFrame(flagged), hide_index=True, use_container_width=True)
+                st.caption("Код ошибки не содержит точного допустимого количества. Нельзя автоматически уменьшать поставку или считать её доступной.")
+
         if st.session_state.get("technical_draft_signature") == draft_signature:
             current_draft = st.session_state.get("technical_draft_id")
             if current_draft:
@@ -700,6 +727,7 @@ with tab_warehouses:
                     st.write("Статус Ozon:", str(info.get("status", "неизвестен")))
                     if info.get("errors"):
                         st.warning("Ошибки Ozon: " + json.dumps(info["errors"], ensure_ascii=False)[:3000])
+                        show_cluster_limit_errors(info["errors"])
                     warehouses_output = []
                     for item in info.get("clusters", []) or []:
                         if not isinstance(item, dict):
