@@ -528,5 +528,58 @@ with tab_warehouses:
             "Скачать сопоставление CSV", matched_df.to_csv(index=False).encode("utf-8-sig"),
             "ozon_cluster_mapping.csv", "text/csv", key="download_cluster_mapping",
         )
+
+        st.divider()
+        st.subheader("🔎 Предварительная проверка перед поставкой")
+        st.caption("Проверка локальная: не создаёт черновиков и не запрашивает неподтверждённые лимиты Ozon.")
+        total_to_supply = int(matched_df["Отправить, шт."].sum())
+        origin_matches = [
+            p for p in st.session_state.get("fbo_dropoff_points", [])
+            if "КАЗАНЬ" in str(p.get("name", "")).upper()
+            and "АЭРОПОРТ" in str(p.get("name", "")).upper()
+            and "КРОССДОКИНГ" in str(p.get("name", "")).upper()
+        ]
+        origin_ok = len(origin_matches) == 1 and bool(origin_matches[0].get("warehouse_id"))
+        all_matched = matched == len(matches)
+        minimum_ok = bool((matched_df["Отправить, шт."] >= 19).all())
+        unique_clusters_ok = not matched_df["Кластер из плана"].duplicated().any()
+        no_samara = not matched_df["Кластер из плана"].str.contains("самара", case=False, na=False).any()
+        st.write(f"План: **{total_to_supply} шт.**, кластеров: **{len(matches)}**.")
+        st.write(f"{'✅' if all_matched else '❌'} Все кластеры имеют ID Ozon.")
+        st.write(f"{'✅' if origin_ok else '❌'} Точка отгрузки Казань найдена однозначно.")
+        st.write(f"{'✅' if minimum_ok else '❌'} Минимум 19 штук в каждом кластере.")
+        st.write(f"{'✅' if unique_clusters_ok and no_samara else '❌'} Нет повторов кластеров и Самары.")
+        new_product_sku = st.text_input(
+            "SKU товара для будущей проверки", value="2143372681", key="preflight_sku",
+            help="Укажи реальный числовой SKU Ozon. Это поле ничего не отправляет в Ozon."
+        )
+        wish_date = st.date_input(
+            "Желаемая дата отгрузки (НЕ подтверждена Ozon)",
+            min_value=date.today(), value=date.today() + timedelta(days=7),
+            key="preflight_date",
+        )
+        st.caption("Наличие свободного таймслота и лимиты для каждого кластера пока НЕ проверены.")
+        numeric_sku = new_product_sku.strip().isdigit() and int(new_product_sku.strip()) > 0
+        ready_local = all_matched and origin_ok and minimum_ok and unique_clusters_ok and no_samara and numeric_sku
+        if ready_local:
+            st.success("Локальная проверка пройдена. Следующий этап: проверка возможности создания черновика через Ozon API.")
+        else:
+            st.warning("Есть незаполненные или неверные данные. К проверке в Ozon переходить нельзя.")
+        if st.button("Сформировать файл для проверки поставки", key="preflight_export_button", disabled=not ready_local):
+            draft_export = matched_df.copy()
+            draft_export["SKU Ozon"] = new_product_sku.strip()
+            draft_export["Точка отгрузки ID"] = str(origin_matches[0]["warehouse_id"])
+            draft_export["Желаемая дата (не подтверждена)"] = str(wish_date)
+            draft_export["Доступность Ozon"] = "Не проверено"
+            draft_export["Лимит Ozon"] = "Не проверено"
+            draft_export["Таймслот Ozon"] = "Не проверено"
+            st.session_state.preflight_export = draft_export
+        if "preflight_export" in st.session_state and ready_local:
+            st.download_button(
+                "Скачать план для проверки CSV",
+                st.session_state.preflight_export.to_csv(index=False).encode("utf-8-sig"),
+                "ozon_supply_preflight.csv", "text/csv", key="preflight_download",
+            )
+
     elif not plans:
         st.caption("Рассчитай распределение во вкладке «📊 Распределение», чтобы увидеть соответствие кластеров.")
