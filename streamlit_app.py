@@ -125,6 +125,69 @@ with tab_plan:
                 st.download_button("Скачать план CSV", plan.to_csv(index=False).encode("utf-8-sig"), "ozon_fbo_plan.csv", "text/csv")
                 st.warning("Доступность складов, ограничения маршрутов и зарубежные направления ещё не проверены.")
 
+    st.divider()
+    st.subheader("🐊 Быстрый расчёт по кластерам")
+    st.caption("Пока Ozon не отдаёт географию продаж автоматически, введи продажи и остатки по кластерам вручную. Это предварительный расчёт, без создания поставок.")
+    if "ozon_sales_rows" in st.session_state:
+        available_skus = [r for r in st.session_state.ozon_sales_rows if str(r.get("SKU", "")).strip()]
+        if available_skus:
+            chosen = st.selectbox(
+                "Товар из Ozon",
+                available_skus,
+                format_func=lambda r: str(r.get("Товар") or r.get("SKU"))[:85] + " · " + str(r.get("SKU")),
+                key="manual_plan_product",
+            )
+            st.caption(f"Общие продажи: {chosen.get('В день, шт.', 0)} шт./день. Для расчёта ниже нужна разбивка по кластерам.")
+    else:
+        st.info("Для выбора товара сначала открой вкладку «Продажи Ozon» и нажми «Получить продажи из Ozon».")
+    manual_quantity = st.number_input("Сколько единиц распределить", min_value=0, value=1650, step=1, key="manual_plan_quantity")
+    st.caption("Введи среднесуточные продажи по каждому кластеру и реальные остатки FBO в нём. Добавляй строки кнопкой внизу таблицы.")
+    manual_default = pd.DataFrame([
+        {"Кластер": "", "Продажи, шт./день": 0.0, "Остаток FBO, шт.": 0.0},
+    ])
+    manual_table = st.data_editor(
+        manual_default, num_rows="dynamic", hide_index=True, use_container_width=True,
+        column_config={
+            "Кластер": st.column_config.TextColumn("Кластер", required=True),
+            "Продажи, шт./день": st.column_config.NumberColumn("Продажи, шт./день", min_value=0.0, format="%.2f"),
+            "Остаток FBO, шт.": st.column_config.NumberColumn("Остаток FBO, шт.", min_value=0.0, format="%.0f"),
+        },
+        key="manual_cluster_editor",
+    )
+    if st.button("Рассчитать по кластерам", key="manual_cluster_calculate", type="primary"):
+        try:
+            manual_table = manual_table.copy()
+            manual_table["Кластер"] = manual_table["Кластер"].fillna("").astype(str).str.strip()
+            manual_table = manual_table[manual_table["Кластер"] != ""]
+            if manual_table.empty:
+                raise ValueError("Сначала заполни названия кластеров и их продажи.")
+            if manual_table["Кластер"].str.lower().duplicated().any():
+                raise ValueError("Один кластер указан несколько раз. Объедини его в одну строку.")
+            for field in ("Продажи, шт./день", "Остаток FBO, шт."):
+                manual_table[field] = pd.to_numeric(manual_table[field], errors="coerce")
+                if manual_table[field].isna().any() or (manual_table[field] < 0).any():
+                    raise ValueError(f"Проверь значения в столбце «{field}».")
+            if (manual_table["Остаток FBO, шт."] % 1 != 0).any():
+                raise ValueError("Остатки должны быть целыми штуками.")
+            excluded_samara = manual_table["Кластер"].str.contains("самара", case=False, na=False)
+            if excluded_samara.any():
+                st.info("Самара исключена из расчёта автоматически.")
+            usable = manual_table.loc[~excluded_samara]
+            rows = [(r["Кластер"], r["Продажи, шт./день"], r["Остаток FBO, шт."]) for _, r in usable.iterrows()]
+            plan = calculate(rows, int(manual_quantity), 19)
+            result = pd.DataFrame([{"Кластер": k, "Отправить, шт.": v} for k, v in sorted(plan.items(), key=lambda x: -x[1])])
+            st.session_state.manual_cluster_plan = result
+            st.session_state.manual_cluster_plan_quantity = int(manual_quantity)
+        except ValueError as error:
+            st.session_state.pop("manual_cluster_plan", None)
+            st.error(str(error))
+    if "manual_cluster_plan" in st.session_state:
+        result = st.session_state.manual_cluster_plan
+        st.success(f"Распределено {int(result['Отправить, шт.'].sum())} из {st.session_state.manual_cluster_plan_quantity} шт.")
+        st.dataframe(result, use_container_width=True, hide_index=True)
+        st.download_button("Скачать предварительный план CSV", result.to_csv(index=False).encode("utf-8-sig"), "manual_cluster_plan.csv", "text/csv", key="manual_cluster_download")
+        st.warning("Это расчёт по введённым вручную данным. Склады, лимиты приёмки, даты и маршруты ещё не проверены. Не используй его как подтверждённую поставку.")
+
 with tab_stocks:
     st.subheader("Актуальные остатки FBO")
     st.caption("Только чтение данных Ozon. Не создаёт и не изменяет поставки.")
