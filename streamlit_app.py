@@ -625,10 +625,11 @@ with tab_warehouses:
             str(new_product_sku).strip(),
             str(origin_matches[0]["warehouse_id"]) if origin_ok else "",
         )
+        st.info("Создание технических черновиков перенесено в приватный GitHub-мониторинг. Здесь можно проверять готовый черновик, но нельзя создавать новый через открытую панель.")
         if st.button(
             "Создать ТОЛЬКО технический черновик (без поставки)",
             key="create_technical_draft",
-            disabled=not valid_preflight,
+            disabled=True,
             type="primary",
         ):
             try:
