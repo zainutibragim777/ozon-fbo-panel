@@ -456,8 +456,7 @@ with tab_warehouses:
                 },
                 key="warehouse_mapping_editor",
             )
-            if mapping["Кластер"].str.contains("беларус", case=False, na=False).any():
-                st.warning("В списке есть Беларусь. Международную поставку нужно проверять отдельно; не считай её автоматически доступной.")
+            st.caption("Кластеры СНГ не исключаются автоматически. Доступность конкретного склада и лимиты приёмки проверим отдельно.")
             unassigned = mapping["Склад назначения"].fillna("").astype(str).str.strip().eq("")
             if unassigned.any():
                 st.caption(f"Склад ещё не выбран для {int(unassigned.sum())} кластеров.")
