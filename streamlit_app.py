@@ -750,7 +750,23 @@ with tab_warehouses:
                                 "Причина": avail.get("invalid_reason", ""),
                             })
                     if warehouses_output:
-                        st.dataframe(pd.DataFrame(warehouses_output), hide_index=True, use_container_width=True)
+                        availability_df = pd.DataFrame(warehouses_output)
+                        st.dataframe(availability_df, hide_index=True, use_container_width=True)
+                        summary = availability_df.groupby("Кластер", dropna=False)["Статус"].agg(list)
+                        available_clusters = [str(k) for k, statuses in summary.items()
+                                              if "FULL_AVAILABLE" in statuses]
+                        blocked_clusters = [str(k) for k, statuses in summary.items()
+                                            if "NOT_AVAILABLE" in statuses and "FULL_AVAILABLE" not in statuses]
+                        unknown_clusters = [str(k) for k in summary.index
+                                            if str(k) not in available_clusters and str(k) not in blocked_clusters]
+                        st.write(f"✅ Доступны: **{len(available_clusters)}** кластеров. ❌ Недоступны: **{len(blocked_clusters)}**. Не подтверждены: **{len(unknown_clusters)}**.")
+                        if blocked_clusters:
+                            st.error("Ozon не допускает приёмку в: " + ", ".join(blocked_clusters))
+                        if unknown_clusters:
+                            st.warning("Статус требует уточнения: " + ", ".join(unknown_clusters))
+                        if blocked_clusters or unknown_clusters:
+                            st.warning("Не все направления доступны. Поставку по исходному плану создавать нельзя. Все количества сохраняем.")
+
                     st.caption("Этот ответ не подтверждает лимиты в штуках или свободный таймслот. Ничего автоматически не урезаем и не создаём.")
 
     elif not plans:
