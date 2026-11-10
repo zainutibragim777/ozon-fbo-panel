@@ -416,5 +416,64 @@ with tab_rules:
     st.write("Один город — один склад назначения. Товары объединяем, если склад принимает всё.")
     st.write("Количество не уменьшаем без нового согласования.")
 with tab_warehouses:
-    st.warning("Реальная проверка складов и создание поставок пока не подключены.")
-    st.write("В дальнейшем здесь появятся доступные даты и время для ручного выбора.")
+    st.subheader("🚚 Подготовка складов назначения")
+    st.info("Пока только черновик: Ozon ещё не проверяет доступность склада, приёмку товара, лимиты и даты. Поставки не создаются.")
+    st.caption("Точка отгрузки: КАЗАНЬ_АЭРОПОРТ_КРОССДОКИНГ. Это НЕ склад назначения.")
+    available_plans = []
+    if "category_geo_result_new" in st.session_state:
+        available_plans.append("Метод 2 — новый товар, по категории")
+    if "manual_cluster_plan" in st.session_state:
+        available_plans.append("Метод 1 — по продажам и остаткам (ручной ввод)")
+    if "plan" in st.session_state:
+        available_plans.append("Метод 1 — по продажам и остаткам (Excel)")
+    if not available_plans:
+        st.warning("Сначала рассчитай товар во вкладке «📊 Распределение». После этого здесь появятся кластеры.")
+    else:
+        plan_source = st.selectbox("Откуда взять распределение", available_plans, key="warehouse_plan_source")
+        if plan_source.startswith("Метод 2"):
+            source_df = st.session_state.category_geo_result_new.copy()
+        elif "ручной ввод" in plan_source:
+            source_df = st.session_state.manual_cluster_plan.copy()
+        else:
+            source_df = st.session_state.plan.copy()
+        supply_df = source_df[["Кластер", "Отправить, шт."]].copy()
+        supply_df["Кластер"] = supply_df["Кластер"].astype(str).str.strip()
+        supply_df["Отправить, шт."] = pd.to_numeric(supply_df["Отправить, шт."], errors="coerce")
+        supply_df = supply_df[(supply_df["Кластер"] != "") & (supply_df["Отправить, шт."] > 0)]
+        if supply_df.empty or supply_df["Отправить, шт."].isna().any():
+            st.error("Не удалось получить корректный расчёт. Вернись к распределению.")
+        else:
+            st.metric("Всего к размещению, шт.", int(supply_df["Отправить, шт."].sum()))
+            st.caption("Впиши склад назначения для каждого кластера. Названия не проверены через Ozon: пока это только черновик.")
+            supply_df["Склад назначения"] = ""
+            mapping = st.data_editor(
+                supply_df, num_rows="fixed", hide_index=True, use_container_width=True,
+                disabled=["Кластер", "Отправить, шт."],
+                column_config={
+                    "Кластер": st.column_config.TextColumn("Кластер"),
+                    "Отправить, шт.": st.column_config.NumberColumn("Отправить, шт.", format="%d"),
+                    "Склад назначения": st.column_config.TextColumn("Склад назначения", help="Укажи точное название выбранного склада Ozon"),
+                },
+                key="warehouse_mapping_editor",
+            )
+            if mapping["Кластер"].str.contains("беларус", case=False, na=False).any():
+                st.warning("В списке есть Беларусь. Международную поставку нужно проверять отдельно; не считай её автоматически доступной.")
+            unassigned = mapping["Склад назначения"].fillna("").astype(str).str.strip().eq("")
+            if unassigned.any():
+                st.caption(f"Склад ещё не выбран для {int(unassigned.sum())} кластеров.")
+            if st.button("Подготовить черновик по складам", key="prepare_warehouses", disabled=bool(unassigned.any())):
+                draft = mapping.copy()
+                draft["Точка отгрузки"] = "КАЗАНЬ_АЭРОПОРТ_КРОССДОКИНГ"
+                draft["Статус"] = "Не проверено в Ozon — черновик"
+                st.session_state.warehouse_draft = draft
+                st.session_state.warehouse_draft_source = plan_source
+            if "warehouse_draft" in st.session_state and st.session_state.get("warehouse_draft_source") == plan_source:
+                draft = st.session_state.warehouse_draft
+                st.subheader("Черновик распределения по складам")
+                st.dataframe(draft, hide_index=True, use_container_width=True)
+                st.download_button(
+                    "Скачать черновик CSV",
+                    draft.to_csv(index=False).encode("utf-8-sig"),
+                    "ozon_warehouse_draft.csv", "text/csv", key="warehouse_draft_csv",
+                )
+                st.warning("Не отправляй этот файл как готовую поставку: склад, приёмка, даты, лимиты и маршруты пока не проверены.")
