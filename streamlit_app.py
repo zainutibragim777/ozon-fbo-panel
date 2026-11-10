@@ -4,7 +4,8 @@ import math
 import json
 import urllib.request
 import urllib.error
-from datetime import date, timedelta
+from datetime import date, timedelta, datetime, time
+from pathlib import Path
 import pandas as pd
 import streamlit as st
 
@@ -416,6 +417,103 @@ with tab_rules:
     st.write("Один город — один склад назначения. Товары объединяем, если склад принимает всё.")
     st.write("Количество не уменьшаем без нового согласования.")
 with tab_warehouses:
+    st.subheader("📅 Разные даты и время для каждого кластера")
+    st.caption("Один кластер — одна будущая поставка. Здесь выбираем диапазон дат и часов, затем свободный интервал для каждого направления отдельно.")
+    calendar_path = Path(__file__).with_name("individual_slot_summary.json")
+    if not calendar_path.exists():
+        st.info("Проверка отдельных кластеров в Ozon ещё не завершена. После получения результатов здесь появятся доступные интервалы.")
+    else:
+        try:
+            calendar_data = json.loads(calendar_path.read_text(encoding="utf-8"))
+            cluster_slots = calendar_data.get("clusters") or []
+            checked_at = str(calendar_data.get("checked_at_utc", ""))
+            st.caption(f"Последняя проверка: {checked_at} UTC. Свободные интервалы могли измениться — это не бронь.")
+            starts = [
+                date.fromisoformat(item["date"])
+                for cluster in cluster_slots for item in cluster.get("slots", [])
+                if item.get("date")
+            ]
+            default_from = min(starts) if starts else date.today()
+            default_to = max(starts) if starts else date.today() + timedelta(days=13)
+            picked_range = st.date_input(
+                "Диапазон дат",
+                value=(default_from, default_to),
+                key="independent_date_range",
+            )
+            hours_from = st.time_input("Время с", value=time(8, 0), step=3600, key="independent_time_from")
+            hours_to = st.time_input("Время до", value=time(22, 0), step=3600, key="independent_time_to")
+            if not isinstance(picked_range, (tuple, list)) or len(picked_range) != 2:
+                st.info("Выбери обе даты диапазона.")
+            elif hours_from >= hours_to:
+                st.warning("Конец временного диапазона должен быть позже начала.")
+            else:
+                start_date, end_date = picked_range
+                options_by_cluster = {}
+                for cluster in cluster_slots:
+                    available_options = []
+                    for slot in cluster.get("slots", []):
+                        try:
+                            begin = datetime.fromisoformat(slot["from"])
+                            finish = datetime.fromisoformat(slot["to"])
+                        except (KeyError, ValueError, TypeError):
+                            continue
+                        if start_date <= begin.date() <= end_date and begin.time() >= hours_from and finish.time() <= hours_to:
+                            available_options.append((begin, finish))
+                    available_options.sort(key=lambda pair: pair[0])
+                    options_by_cluster[cluster["name"]] = available_options
+                slot_summary = pd.DataFrame([{
+                    "Кластер": item["name"],
+                    "Количество, шт.": int(item["quantity"]),
+                    "Доступных интервалов": len(options_by_cluster.get(item["name"], [])),
+                    "Первый подходящий": (
+                        options_by_cluster[item["name"]][0][0].strftime("%d.%m %H:%M")
+                        if options_by_cluster.get(item["name"]) else "Нет в диапазоне"
+                    ),
+                } for item in cluster_slots])
+                st.dataframe(slot_summary, hide_index=True, use_container_width=True)
+                if cluster_slots:
+                    selected_name = st.selectbox(
+                        "Выбери кластер для выбора времени",
+                        [item["name"] for item in cluster_slots],
+                        key="selected_individual_cluster",
+                    )
+                    choices = options_by_cluster.get(selected_name, [])
+                    if choices:
+                        selected_slot_index = st.selectbox(
+                            "Свободное время для этого кластера (Москва)",
+                            range(len(choices)),
+                            format_func=lambda i: choices[i][0].strftime("%d.%m.%Y %H:%M") + "–" + choices[i][1].strftime("%H:%M"),
+                            key="selected_individual_slot",
+                        )
+                        if st.button("Сохранить выбранный интервал", key="save_individual_slot"):
+                            chosen_start, chosen_end = choices[selected_slot_index]
+                            if "selected_cluster_slots" not in st.session_state:
+                                st.session_state.selected_cluster_slots = {}
+                            st.session_state.selected_cluster_slots[selected_name] = {
+                                "Кластер": selected_name,
+                                "Количество, шт.": next(int(item["quantity"]) for item in cluster_slots if item["name"] == selected_name),
+                                "Дата": chosen_start.date().isoformat(),
+                                "С": chosen_start.strftime("%H:%M"),
+                                "До": chosen_end.strftime("%H:%M"),
+                            }
+                            st.success("Выбор сохранён в панели. Поставка НЕ создана.")
+                    else:
+                        st.warning("У этого кластера нет подтверждённых интервалов в выбранном диапазоне.")
+                    if st.session_state.get("selected_cluster_slots"):
+                        chosen_df = pd.DataFrame(list(st.session_state.selected_cluster_slots.values()))
+                        st.subheader("Сохранённые варианты поставок")
+                        st.dataframe(chosen_df, hide_index=True, use_container_width=True)
+                        st.download_button(
+                            "Скачать выбранные даты CSV",
+                            chosen_df.to_csv(index=False).encode("utf-8-sig"),
+                            "ozon_individual_slot_choices.csv",
+                            "text/csv",
+                            key="individual_chosen_slots_csv",
+                        )
+                        st.caption("Сохранение выбора не бронирует слот и не создаёт поставку. Перед оформлением потребуется обновить доступность и подтвердить создание.")
+        except (OSError, ValueError, TypeError, KeyError) as error:
+            st.error(f"Не удалось прочитать интервалы: {error}")
+    st.divider()
     st.subheader("📦 Отдельное оформление доступных направлений")
     st.caption("Сохранённый снимок проверки Ozon от 10.11.2026 для КРОКОДИЛА, SKU 2143372681. Видно всегда, даже после обновления страницы. Статусы могут измениться.")
     snapshot_rows = [["Москва, МО и Дальние регионы",4039,357,"Доступен"],["Ростов",4071,163,"Доступен"],["Санкт-Петербург и СЗО",4007,158,"Доступен"],["Новосибирск",4067,101,"Доступен"],["Казань",4041,96,"Доступен"],["Екатеринбург",4066,92,"Доступен"],["Воронеж",4036,91,"Ожидает"],["Беларусь",4001,80,"Ожидает"],["Ярославль",4051,75,"Доступен"],["Красноярск",4043,66,"Ожидает"],["Уфа",4040,62,"Ожидает"],["Тюмень",4046,60,"Доступен"],["Краснодар",4065,60,"Доступен"],["Дальний Восток",4002,57,"Доступен"],["Саратов",4049,48,"Доступен"],["Невинномысск",4076,36,"Доступен"],["Пермь",4070,25,"Доступен"],["Омск",4068,23,"Доступен"]]
