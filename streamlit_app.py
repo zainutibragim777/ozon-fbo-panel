@@ -1,6 +1,9 @@
 """Личная панель планирования Ozon FBO. Без запросов к API и создания заявок."""
 import hmac
 import math
+import json
+import urllib.request
+import urllib.error
 import pandas as pd
 import streamlit as st
 
@@ -64,7 +67,7 @@ if st.button("Выйти"):
     st.session_state.logged_in = False
     st.rerun()
 
-tab_plan, tab_rules, tab_warehouses = st.tabs(["📊 Распределение", "⚙️ Правила", "🚚 Склады"])
+tab_plan, tab_stocks, tab_rules, tab_warehouses = st.tabs(["📊 Распределение", "📦 Остатки Ozon", "⚙️ Правила", "🚚 Склады"])
 with tab_plan:
     uploaded = st.file_uploader("Загрузи Excel или CSV с продажами и остатками", type=["xlsx", "csv"])
     if uploaded is not None:
@@ -120,6 +123,54 @@ with tab_plan:
                 st.metric("Всего распределено", int(plan["Отправить, шт."].sum()) if not plan.empty else 0)
                 st.download_button("Скачать план CSV", plan.to_csv(index=False).encode("utf-8-sig"), "ozon_fbo_plan.csv", "text/csv")
                 st.warning("Доступность складов, ограничения маршрутов и зарубежные направления ещё не проверены.")
+
+with tab_stocks:
+    st.subheader("Актуальные остатки FBO")
+    st.caption("Только чтение данных Ozon. Не создаёт и не изменяет поставки.")
+    client_id = str(st.secrets.get("OZON_CLIENT_ID", ""))
+    api_key = str(st.secrets.get("OZON_API_KEY", ""))
+    if not client_id or not api_key:
+        st.warning("Для подключения добавь OZON_CLIENT_ID и OZON_API_KEY в Streamlit Secrets. Пароль APP_PASSWORD не удаляй.")
+    elif st.button("🔄 Обновить остатки из Ozon", type="primary"):
+        try:
+            records = []
+            limit = 1000
+            offset = 0
+            # Bounded pagination avoids an accidental long-running request.
+            for _ in range(30):
+                request = urllib.request.Request(
+                    "https://api-seller.ozon.ru/v2/analytics/stock_on_warehouses",
+                    data=json.dumps({"limit": limit, "offset": offset, "warehouse_type": "ALL"}).encode("utf-8"),
+                    headers={"Client-Id": client_id, "Api-Key": api_key, "Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urllib.request.urlopen(request, timeout=30) as response:
+                    payload = json.load(response)
+                result = payload.get("result", {}) if isinstance(payload, dict) else {}
+                page = result.get("rows", []) if isinstance(result, dict) else []
+                if not isinstance(page, list):
+                    raise ValueError("Ozon вернул неожиданный формат данных.")
+                records.extend(page)
+                if len(page) < limit:
+                    break
+                offset += limit
+            st.session_state.ozon_stock_rows = records
+            st.session_state.ozon_stock_truncated = len(page) == limit
+        except urllib.error.HTTPError as error:
+            st.error(f"Ozon вернул HTTP {error.code}. Проверь доступ к методу и ключи.")
+        except Exception:
+            st.error("Не удалось получить остатки. Попробуй позже.")
+    if "ozon_stock_rows" in st.session_state:
+        records = st.session_state.ozon_stock_rows
+        st.success(f"Получено строк: {len(records)}")
+        if st.session_state.get("ozon_stock_truncated"):
+            st.warning("Получены не все данные: достигнут предел загрузки.")
+        if records:
+            stock_df = pd.DataFrame(records)
+            st.dataframe(stock_df, use_container_width=True, hide_index=True)
+            st.download_button("Скачать остатки CSV", stock_df.to_csv(index=False).encode("utf-8-sig"), "ozon_fbo_stocks.csv", "text/csv")
+        st.caption("Эти остатки пока не подставляются в расчёт: сначала проверим соответствие складов кластерам и товаров артикулам.")
+
 with tab_rules:
     st.write("Минимум 19 шт. **каждого товара** на кластер.")
     st.write("Самара исключена по умолчанию.")
