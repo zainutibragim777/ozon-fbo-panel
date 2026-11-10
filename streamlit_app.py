@@ -765,8 +765,61 @@ with tab_warehouses:
                             st.error("Ozon не допускает приёмку в: " + ", ".join(blocked_clusters))
                         if unknown_clusters:
                             st.warning("Статус требует уточнения: " + ", ".join(unknown_clusters))
+                        # Split the full plan by actual Ozon cluster availability, without
+                        # redistributing or reducing any quantity.
+                        availability_by_name = {
+                            " ".join(str(cluster_name).strip().casefold().replace("ё", "е").split()):
+                            list(statuses) for cluster_name, statuses in summary.items()
+                        }
+                        approved_rows, blocked_rows, unchecked_rows = [], [], []
+                        for _, planned in matched_df.iterrows():
+                            item = planned.to_dict()
+                            cluster_key = " ".join(str(item["Кластер из плана"]).strip().casefold().replace("ё", "е").split())
+                            statuses = availability_by_name.get(cluster_key, [])
+                            if "FULL_AVAILABLE" in statuses:
+                                approved_rows.append(item)
+                            elif "NOT_AVAILABLE" in statuses:
+                                blocked_rows.append(item)
+                            else:
+                                unchecked_rows.append(item)
+                        approved_total = sum(int(x["Отправить, шт."]) for x in approved_rows)
+                        blocked_total = sum(int(x["Отправить, шт."]) for x in blocked_rows)
+                        unchecked_total = sum(int(x["Отправить, шт."]) for x in unchecked_rows)
+                        st.divider()
+                        st.subheader("📦 Отдельное оформление доступных направлений")
+                        st.write(
+                            f"**Доступная группа:** {len(approved_rows)} кластеров, {approved_total} шт.  "
+                            f"**Ожидают Ozon:** {len(blocked_rows)} кластеров, {blocked_total} шт.  "
+                            f"**Не проверены:** {len(unchecked_rows)} кластеров, {unchecked_total} шт."
+                        )
+                        if approved_total + blocked_total + unchecked_total != total_to_supply:
+                            st.error("Ошибка проверки сумм: группы не совпадают с исходным планом. Дальнейшее оформление заблокировано.")
+                        else:
+                            if approved_rows:
+                                st.success("Доступные направления можно оформлять отдельно — не дожидаясь остальных.")
+                                ready_df = pd.DataFrame(approved_rows)
+                                st.dataframe(ready_df, hide_index=True, use_container_width=True)
+                                st.download_button(
+                                    "Скачать 14 доступных направлений CSV",
+                                    ready_df.to_csv(index=False).encode("utf-8-sig"),
+                                    "ozon_ready_clusters.csv", "text/csv",
+                                    key="ready_clusters_csv",
+                                )
+                            if blocked_rows:
+                                blocked_df = pd.DataFrame(blocked_rows)
+                                st.warning("Заблокированные направления остаются в отдельной очереди мониторинга. Их количество не переносим в доступную группу.")
+                                st.dataframe(blocked_df, hide_index=True, use_container_width=True)
+                                st.download_button(
+                                    "Скачать ожидающие кластеры CSV",
+                                    blocked_df.to_csv(index=False).encode("utf-8-sig"),
+                                    "ozon_blocked_clusters.csv", "text/csv",
+                                    key="blocked_clusters_csv",
+                                )
+                            if unchecked_rows:
+                                st.warning("Есть направления с неизвестным статусом — им нельзя автоматически назначать поставку.")
+                            st.caption("Статус FULL_AVAILABLE подтверждает предварительную доступность направления, но не свободный таймслот. Реальную поставку создаём только после выбора даты, времени и явного подтверждения.")
                         if blocked_clusters or unknown_clusters:
-                            st.warning("Не все направления доступны. Поставку по исходному плану создавать нельзя. Все количества сохраняем.")
+                            st.info("Четыре недоступных направления НЕ блокируют подготовку остальных. Создание заявок пока не выполняется.")
 
                     st.caption("Этот ответ не подтверждает лимиты в штуках или свободный таймслот. Ничего автоматически не урезаем и не создаём.")
 
