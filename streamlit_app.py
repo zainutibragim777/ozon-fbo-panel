@@ -442,7 +442,7 @@ with tab_warehouses:
                 cluster_list = response.get("clusters", []) if isinstance(response, dict) else []
                 if not isinstance(cluster_list, list):
                     raise ValueError("Ozon вернул неожиданный формат кластеров.")
-                all_clusters.extend(cluster_list)
+                all_clusters.extend({**item, "_requested_cluster_type": cluster_type} for item in cluster_list if isinstance(item, dict))
             st.session_state.fbo_cluster_reference = all_clusters
             st.session_state.fbo_cluster_error = None
         except urllib.error.HTTPError as err:
@@ -470,7 +470,7 @@ with tab_warehouses:
         clusters_ref = st.session_state.fbo_cluster_reference
         cluster_rows = [
             {"Кластер Ozon": str(x.get("name", "")), "ID кластера": str(x.get("id", "")),
-             "Тип": "СНГ" if str(x.get("type", "")) == "CLUSTER_TYPE_CIS" else "Россия"}
+             "Тип": "СНГ" if x.get("_requested_cluster_type") == "CLUSTER_TYPE_CIS" else "Россия"}
             for x in clusters_ref if isinstance(x, dict) and x.get("name")
         ]
         st.success(f"Получено кластеров Ozon: {len(cluster_rows)}")
@@ -480,13 +480,16 @@ with tab_warehouses:
     if "fbo_dropoff_points" in st.session_state:
         points = st.session_state.fbo_dropoff_points
         st.subheader("Точка отгрузки — Казань")
-        st.dataframe(
-            pd.DataFrame([{
-                "Название": str(p.get("name", "")), "ID": str(p.get("warehouse_id", "")),
-                "Адрес": str(p.get("address", "")), "Тип": str(p.get("warehouse_type", "")),
-            } for p in points if isinstance(p, dict)]),
-            hide_index=True, use_container_width=True,
-        ) if points else st.info("Точка отгрузки не найдена по поиску. Нужно уточнить её название в Ozon.")
+        if points:
+            point_rows = [{
+                "Название": str(p.get("name", "")),
+                "ID": str(p.get("warehouse_id", "")),
+                "Адрес": str(p.get("address", "")),
+                "Тип": str(p.get("warehouse_type", "")),
+            } for p in points if isinstance(p, dict)]
+            st.dataframe(pd.DataFrame(point_rows), hide_index=True, use_container_width=True)
+        else:
+            st.info("Точка отгрузки не найдена по поиску. Нужно уточнить её название в Ozon.")
 
     plans = []
     if "category_geo_result_new" in st.session_state:
