@@ -416,63 +416,114 @@ with tab_rules:
     st.write("Один город — один склад назначения. Товары объединяем, если склад принимает всё.")
     st.write("Количество не уменьшаем без нового согласования.")
 with tab_warehouses:
-    st.subheader("🚚 Подготовка складов назначения")
-    st.info("Пока только черновик: Ozon ещё не проверяет доступность склада, приёмку товара, лимиты и даты. Поставки не создаются.")
-    st.caption("Точка отгрузки: КАЗАНЬ_АЭРОПОРТ_КРОССДОКИНГ. Это НЕ склад назначения.")
-    available_plans = []
-    if "category_geo_result_new" in st.session_state:
-        available_plans.append("Метод 2 — новый товар, по категории")
-    if "manual_cluster_plan" in st.session_state:
-        available_plans.append("Метод 1 — по продажам и остаткам (ручной ввод)")
-    if "plan" in st.session_state:
-        available_plans.append("Метод 1 — по продажам и остаткам (Excel)")
-    if not available_plans:
-        st.warning("Сначала рассчитай товар во вкладке «📊 Распределение». После этого здесь появятся кластеры.")
-    else:
-        plan_source = st.selectbox("Откуда взять распределение", available_plans, key="warehouse_plan_source")
-        if plan_source.startswith("Метод 2"):
-            source_df = st.session_state.category_geo_result_new.copy()
-        elif "ручной ввод" in plan_source:
-            source_df = st.session_state.manual_cluster_plan.copy()
-        else:
-            source_df = st.session_state.plan.copy()
-        supply_df = source_df[["Кластер", "Отправить, шт."]].copy()
-        supply_df["Кластер"] = supply_df["Кластер"].astype(str).str.strip()
-        supply_df["Отправить, шт."] = pd.to_numeric(supply_df["Отправить, шт."], errors="coerce")
-        supply_df = supply_df[(supply_df["Кластер"] != "") & (supply_df["Отправить, шт."] > 0)]
-        if supply_df.empty or supply_df["Отправить, шт."].isna().any():
-            st.error("Не удалось получить корректный расчёт. Вернись к распределению.")
-        else:
-            st.metric("Всего к размещению, шт.", int(supply_df["Отправить, шт."].sum()))
-            st.caption("Впиши склад назначения для каждого кластера. Названия не проверены через Ozon: пока это только черновик.")
-            supply_df["Склад назначения"] = ""
-            mapping = st.data_editor(
-                supply_df, num_rows="fixed", hide_index=True, use_container_width=True,
-                disabled=["Кластер", "Отправить, шт."],
-                column_config={
-                    "Кластер": st.column_config.TextColumn("Кластер"),
-                    "Отправить, шт.": st.column_config.NumberColumn("Отправить, шт.", format="%d"),
-                    "Склад назначения": st.column_config.TextColumn("Склад назначения", help="Укажи точное название выбранного склада Ozon"),
-                },
-                key="warehouse_mapping_editor",
+    st.subheader("🚚 Кластеры Ozon для кросс-докинга")
+    st.caption("Точка отгрузки: КАЗАНЬ_АЭРОПОРТ_КРОССДОКИНГ. Для кросс-докинга Ozon планирует поставки на кластеры.")
+    st.warning("Пока только просмотр справочника Ozon. Доступность приёмки, лимиты и даты не подтверждены. Реальные поставки не создаются.")
+    client_id_wh = str(st.secrets.get("OZON_CLIENT_ID", ""))
+    api_key_wh = str(st.secrets.get("OZON_API_KEY", ""))
+
+    def ozon_reference_request(endpoint, body):
+        request = urllib.request.Request(
+            "https://api-seller.ozon.ru" + endpoint,
+            data=json.dumps(body).encode("utf-8"),
+            headers={"Client-Id": client_id_wh, "Api-Key": api_key_wh, "Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=30) as response:
+            return json.load(response)
+
+    if not client_id_wh or not api_key_wh:
+        st.error("Не найдены API-ключи в Streamlit Secrets.")
+    elif st.button("🔄 Загрузить кластеры и точку отгрузки из Ozon", type="primary", key="fetch_fbo_clusters"):
+        try:
+            all_clusters = []
+            for cluster_type in ("CLUSTER_TYPE_OZON", "CLUSTER_TYPE_CIS"):
+                response = ozon_reference_request("/v1/cluster/list", {"cluster_type": cluster_type})
+                cluster_list = response.get("clusters", []) if isinstance(response, dict) else []
+                if not isinstance(cluster_list, list):
+                    raise ValueError("Ozon вернул неожиданный формат кластеров.")
+                all_clusters.extend(cluster_list)
+            st.session_state.fbo_cluster_reference = all_clusters
+            st.session_state.fbo_cluster_error = None
+        except urllib.error.HTTPError as err:
+            st.session_state.fbo_cluster_error = f"Кластеры: Ozon вернул HTTP {err.code}."
+        except Exception as err:
+            st.session_state.fbo_cluster_error = f"Кластеры: {err}"
+        try:
+            dropoff_response = ozon_reference_request(
+                "/v1/warehouse/fbo/list",
+                {"filter_by_supply_type": ["CREATE_TYPE_CROSSDOCK"], "search": "КАЗАНЬ_АЭРОПОРТ"},
             )
-            st.caption("Кластеры СНГ не исключаются автоматически. Доступность конкретного склада и лимиты приёмки проверим отдельно.")
-            unassigned = mapping["Склад назначения"].fillna("").astype(str).str.strip().eq("")
-            if unassigned.any():
-                st.caption(f"Склад ещё не выбран для {int(unassigned.sum())} кластеров.")
-            if st.button("Подготовить черновик по складам", key="prepare_warehouses", disabled=bool(unassigned.any())):
-                draft = mapping.copy()
-                draft["Точка отгрузки"] = "КАЗАНЬ_АЭРОПОРТ_КРОССДОКИНГ"
-                draft["Статус"] = "Не проверено в Ozon — черновик"
-                st.session_state.warehouse_draft = draft
-                st.session_state.warehouse_draft_source = plan_source
-            if "warehouse_draft" in st.session_state and st.session_state.get("warehouse_draft_source") == plan_source:
-                draft = st.session_state.warehouse_draft
-                st.subheader("Черновик распределения по складам")
-                st.dataframe(draft, hide_index=True, use_container_width=True)
-                st.download_button(
-                    "Скачать черновик CSV",
-                    draft.to_csv(index=False).encode("utf-8-sig"),
-                    "ozon_warehouse_draft.csv", "text/csv", key="warehouse_draft_csv",
-                )
-                st.warning("Не отправляй этот файл как готовую поставку: склад, приёмка, даты, лимиты и маршруты пока не проверены.")
+            found_points = dropoff_response.get("search", []) if isinstance(dropoff_response, dict) else []
+            st.session_state.fbo_dropoff_points = found_points if isinstance(found_points, list) else []
+            st.session_state.fbo_dropoff_error = None
+        except urllib.error.HTTPError as err:
+            st.session_state.fbo_dropoff_error = f"Точка отгрузки: Ozon вернул HTTP {err.code}."
+        except Exception as err:
+            st.session_state.fbo_dropoff_error = f"Точка отгрузки: {err}"
+
+    if st.session_state.get("fbo_cluster_error"):
+        st.error(st.session_state.fbo_cluster_error)
+    if st.session_state.get("fbo_dropoff_error"):
+        st.warning(st.session_state.fbo_dropoff_error)
+    if "fbo_cluster_reference" in st.session_state:
+        clusters_ref = st.session_state.fbo_cluster_reference
+        cluster_rows = [
+            {"Кластер Ozon": str(x.get("name", "")), "ID кластера": str(x.get("id", "")),
+             "Тип": "СНГ" if str(x.get("type", "")) == "CLUSTER_TYPE_CIS" else "Россия"}
+            for x in clusters_ref if isinstance(x, dict) and x.get("name")
+        ]
+        st.success(f"Получено кластеров Ozon: {len(cluster_rows)}")
+        st.dataframe(pd.DataFrame(cluster_rows), hide_index=True, use_container_width=True)
+        st.download_button("Скачать справочник кластеров", pd.DataFrame(cluster_rows).to_csv(index=False).encode("utf-8-sig"),
+                           "ozon_fbo_clusters.csv", "text/csv", key="download_fbo_clusters")
+    if "fbo_dropoff_points" in st.session_state:
+        points = st.session_state.fbo_dropoff_points
+        st.subheader("Точка отгрузки — Казань")
+        st.dataframe(
+            pd.DataFrame([{
+                "Название": str(p.get("name", "")), "ID": str(p.get("warehouse_id", "")),
+                "Адрес": str(p.get("address", "")), "Тип": str(p.get("warehouse_type", "")),
+            } for p in points if isinstance(p, dict)]),
+            hide_index=True, use_container_width=True,
+        ) if points else st.info("Точка отгрузки не найдена по поиску. Нужно уточнить её название в Ozon.")
+
+    plans = []
+    if "category_geo_result_new" in st.session_state:
+        plans.append(("Метод 2 — новый товар", "category_geo_result_new"))
+    if "manual_cluster_plan" in st.session_state:
+        plans.append(("Метод 1 — ручные данные", "manual_cluster_plan"))
+    if "plan" in st.session_state:
+        plans.append(("Метод 1 — Excel", "plan"))
+    if plans and "fbo_cluster_reference" in st.session_state:
+        st.divider()
+        st.subheader("Сопоставление плана с кластерами Ozon")
+        source_label = st.selectbox("План распределения", [p[0] for p in plans], key="fbo_cluster_plan_source")
+        source_key = next(key for label, key in plans if label == source_label)
+        planning = st.session_state[source_key][["Кластер", "Отправить, шт."]].copy()
+        official = st.session_state.fbo_cluster_reference
+        named = {str(cl.get("name", "")).strip().casefold(): cl for cl in official if isinstance(cl, dict)}
+        def normalized_name(name):
+            return " ".join(str(name).strip().casefold().replace("ё", "е").split())
+        names = {normalized_name(cl.get("name", "")): cl for cl in official if isinstance(cl, dict)}
+        matches = []
+        for _, row in planning.iterrows():
+            name = str(row["Кластер"]).strip()
+            hit = names.get(normalized_name(name))
+            matches.append({
+                "Кластер из плана": name,
+                "Кластер Ozon": str(hit.get("name", "")) if hit else "",
+                "ID кластера Ozon": str(hit.get("id", "")) if hit else "",
+                "Отправить, шт.": int(row["Отправить, шт."]),
+                "Статус": "Совпало" if hit else "Не сопоставлено",
+            })
+        matched_df = pd.DataFrame(matches)
+        st.dataframe(matched_df, hide_index=True, use_container_width=True)
+        matched = sum(item["Статус"] == "Совпало" for item in matches)
+        st.info(f"Автоматически сопоставлено {matched} из {len(matches)} кластеров. Несовпавшие нельзя передавать в заявку без уточнения.")
+        st.download_button(
+            "Скачать сопоставление CSV", matched_df.to_csv(index=False).encode("utf-8-sig"),
+            "ozon_cluster_mapping.csv", "text/csv", key="download_cluster_mapping",
+        )
+    elif not plans:
+        st.caption("Рассчитай распределение во вкладке «📊 Распределение», чтобы увидеть соответствие кластеров.")
