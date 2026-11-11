@@ -46,6 +46,8 @@ def calculate(rows, quantity, minimum):
 st.title("📦 Ozon FBO Control")
 st.caption("Метод 2: выбирай товар, Excel, диапазон дат и времени, затем создавай отдельные поставки. Метод 1 не изменён.")
 st.info("Постоянная точка отгрузки: КАЗАНЬ_АЭРОПОРТ_КРОССДОКИНГ")
+from io import BytesIO
+import method1_state as method1_store
 from method2_supply import render_method2, queue_worker
 
 tab_method2, tab_plan, tab_stocks, tab_sales, tab_rules, tab_warehouses = st.tabs(
@@ -57,58 +59,130 @@ with tab_method2:
 with tab_plan:
     uploaded = st.file_uploader("Загрузи Excel или CSV с продажами и остатками", type=["xlsx", "csv"])
     if uploaded is not None:
+        report_hash, changed = method1_store.save_report(uploaded.name, uploaded.getvalue())
+        if changed:
+            st.success("Файл сохранён на сервере. При обновлении страницы не пропадёт.")
+    saved_report = method1_store.load_report()
+    if saved_report is not None:
+        if uploaded is None:
+            st.success(f"Восстановлен предыдущий файл: {saved_report['name']}. Загружать заново не нужно.")
         try:
-            df = pd.read_excel(uploaded) if uploaded.name.lower().endswith(".xlsx") else pd.read_csv(uploaded)
+            report_bytes = BytesIO(saved_report["content"])
+            df = pd.read_excel(report_bytes) if saved_report["name"].lower().endswith(".xlsx") else pd.read_csv(report_bytes)
+            if df.empty:
+                raise ValueError("Файл пустой.")
         except Exception:
-            st.error("Не удалось прочитать файл. Проверь его формат.")
-            st.stop()
-        if df.empty:
-            st.error("Файл пустой.")
-            st.stop()
-        columns = list(df.columns)
-        def select_column(title, key, patterns):
-            preferred = next((c for c in columns if any(p in str(c).lower() for p in patterns)), columns[0])
-            return st.selectbox(title, columns, index=columns.index(preferred), key=key)
-        sku_col = select_column("Товар / артикул", "sku_column", ["артикул", "sku", "товар"])
-        cluster_col = select_column("Кластер", "cluster_column", ["кластер", "регион", "город"])
-        daily_col = select_column("Среднесуточные продажи, ШТУК в день", "daily_column", ["среднесут", "шт./день", "штук в день"])
-        stock_col = select_column("Остатки FBO, ШТУК", "stock_column", ["остаток fbo", "fbo"])
-        if len({sku_col, cluster_col, daily_col, stock_col}) != 4:
-            st.warning("Нужно выбрать четыре разных столбца.")
+            st.error("Не удалось прочитать сохранённый файл. Загрузи исправленную версию.")
+            st.session_state.pop("plan", None)
+            st.session_state.pop("plan_sku", None)
         else:
-            st.caption("Важно: продажи должны быть в штуках в день, не в рублях.")
-            products = sorted(df[sku_col].dropna().astype(str).unique().tolist())
-            if not products:
-                st.error("В файле нет товаров.")
-                st.stop()
-            sku = st.selectbox("Товар", products)
-            quantity = st.number_input("Количество к распределению, шт.", min_value=0, value=1650, step=1)
-            minimum = st.number_input("Минимум на один товар и кластер", min_value=1, value=19, step=1)
-            clusters = sorted(df[cluster_col].dropna().astype(str).unique().tolist())
-            excluded = st.multiselect("Исключить кластеры", clusters, default=[c for c in clusters if any(city in c.lower() for city in ("самара", "махачкала"))])
-            if st.button("Рассчитать", type="primary"):
-                subset = df.loc[df[sku_col].astype(str) == sku, [cluster_col, daily_col, stock_col]].copy()
-                subset[daily_col] = pd.to_numeric(subset[daily_col], errors="coerce")
-                subset[stock_col] = pd.to_numeric(subset[stock_col], errors="coerce")
-                if subset[[daily_col, stock_col]].isna().any().any() or (subset[[daily_col, stock_col]] < 0).any().any():
-                    st.error("В продажах или остатках есть пустые, отрицательные или нечисловые значения.")
+            columns = list(df.columns)
+            def select_column(title, key, patterns):
+                saved_choice = method1_store.get_setting("method1_" + key)
+                preferred = next(
+                    (column for column in columns if str(column) == saved_choice),
+                    next((column for column in columns if any(p in str(column).lower() for p in patterns)), columns[0])
+                )
+                selected = st.selectbox(title, columns, index=columns.index(preferred), key=key)
+                method1_store.set_setting("method1_" + key, str(selected))
+                return selected
+
+            sku_col = select_column("Товар / артикул", "sku_column", ["артикул", "sku", "товар"])
+            cluster_col = select_column("Кластер", "cluster_column", ["кластер", "регион", "город"])
+            daily_col = select_column("Среднесуточные продажи, ШТУК в день", "daily_column", ["среднесут", "шт./день", "штук в день"])
+            stock_col = select_column("Остатки FBO, ШТУК", "stock_column", ["остаток fbo", "fbo"])
+
+            if len({sku_col, cluster_col, daily_col, stock_col}) != 4:
+                st.warning("Нужно выбрать четыре разных столбца.")
+                st.session_state.pop("plan", None)
+                st.session_state.pop("plan_sku", None)
+            else:
+                st.caption("Важно: продажи должны быть в штуках в день, не в рублях.")
+                products = sorted(df[sku_col].dropna().astype(str).unique().tolist())
+                if not products:
+                    st.error("В файле нет товаров.")
                 else:
-                    grouped = subset.groupby(cluster_col, as_index=False)[[daily_col, stock_col]].sum()
-                    rows = [(r[cluster_col], r[daily_col], r[stock_col]) for _, r in grouped.iterrows() if str(r[cluster_col]) not in excluded]
-                    try:
-                        plan = calculate(rows, int(quantity), int(minimum))
-                        output = pd.DataFrame([{"Кластер": c, "Отправить, шт.": n} for c, n in sorted(plan.items(), key=lambda p: -p[1])])
-                        st.session_state.plan = output
-                        st.session_state.plan_sku = sku
-                    except ValueError as e:
-                        st.error(str(e))
-            if "plan" in st.session_state:
-                st.subheader("Предварительный план: " + st.session_state.plan_sku)
-                plan = st.session_state.plan
-                st.dataframe(plan, use_container_width=True, hide_index=True)
-                st.metric("Всего распределено", int(plan["Отправить, шт."].sum()) if not plan.empty else 0)
-                st.download_button("Скачать план CSV", plan.to_csv(index=False).encode("utf-8-sig"), "ozon_fbo_plan.csv", "text/csv")
-                st.warning("Доступность складов, ограничения маршрутов и зарубежные направления ещё не проверены.")
+                    saved_sku = method1_store.get_setting("method1_sku")
+                    sku = st.selectbox("Товар", products, index=products.index(saved_sku) if saved_sku in products else 0)
+                    saved_qty = method1_store.get_setting("method1_quantity", 1650)
+                    saved_minimum = method1_store.get_setting("method1_minimum", 19)
+                    quantity = st.number_input(
+                        "Количество к распределению, шт.", min_value=0,
+                        value=max(0, int(saved_qty)), step=1, key="method1_quantity",
+                    )
+                    minimum = st.number_input(
+                        "Минимум на один товар и кластер", min_value=1,
+                        value=max(1, int(saved_minimum)), step=1, key="method1_minimum",
+                    )
+                    clusters = sorted(df[cluster_col].dropna().astype(str).unique().tolist())
+                    previous_excluded = method1_store.get_setting("method1_excluded")
+                    excluded_default = (
+                        [name for name in previous_excluded if name in clusters]
+                        if isinstance(previous_excluded, list)
+                        else [name for name in clusters if any(
+                            city in name.lower() for city in ("самара", "махачкала")
+                        )]
+                    )
+                    excluded = st.multiselect(
+                        "Исключить кластеры", clusters,
+                        default=excluded_default, key="method1_excluded",
+                    )
+                    method1_store.set_setting("method1_sku", sku)
+                    method1_store.set_setting("method1_quantity", int(quantity))
+                    method1_store.set_setting("method1_minimum", int(minimum))
+                    method1_store.set_setting("method1_excluded", list(excluded))
+
+                    calculation_inputs = {
+                        "file": saved_report["sha256"],
+                        "product": sku,
+                        "columns": [str(sku_col), str(cluster_col), str(daily_col), str(stock_col)],
+                        "quantity": int(quantity),
+                        "minimum": int(minimum),
+                        "excluded": sorted(excluded),
+                    }
+                    calculation_signature = method1_store.signature_for(calculation_inputs)
+                    cached_plan = method1_store.get_plan("excel", calculation_signature)
+                    if st.button("Рассчитать", type="primary", key="method1_calculate"):
+                        subset = df.loc[df[sku_col].astype(str) == sku, [cluster_col, daily_col, stock_col]].copy()
+                        subset[daily_col] = pd.to_numeric(subset[daily_col], errors="coerce")
+                        subset[stock_col] = pd.to_numeric(subset[stock_col], errors="coerce")
+                        if subset[[daily_col, stock_col]].isna().any().any() or (subset[[daily_col, stock_col]] < 0).any().any():
+                            st.error("В продажах или остатках есть пустые, отрицательные или нечисловые значения.")
+                        else:
+                            grouped = subset.groupby(cluster_col, as_index=False)[[daily_col, stock_col]].sum()
+                            rows = [
+                                (r[cluster_col], r[daily_col], r[stock_col])
+                                for _, r in grouped.iterrows() if str(r[cluster_col]) not in excluded
+                            ]
+                            try:
+                                plan = calculate(rows, int(quantity), int(minimum))
+                                rows_for_save = [
+                                    {"Кластер": cluster, "Отправить, шт.": amount}
+                                    for cluster, amount in sorted(plan.items(), key=lambda p: -p[1])
+                                ]
+                                method1_store.save_plan("excel", calculation_signature, sku, rows_for_save)
+                                cached_plan = method1_store.get_plan("excel", calculation_signature)
+                            except ValueError as error:
+                                st.error(str(error))
+
+                    if cached_plan is not None:
+                        st.session_state.plan = pd.DataFrame(
+                            cached_plan["rows"], columns=["Кластер", "Отправить, шт."]
+                        )
+                        st.session_state.plan_sku = cached_plan["sku"]
+                        st.subheader("Сохранённый план: " + cached_plan["sku"])
+                        st.dataframe(st.session_state.plan, use_container_width=True, hide_index=True)
+                        st.metric("Всего распределено", int(st.session_state.plan["Отправить, шт."].sum()))
+                        st.download_button(
+                            "Скачать план CSV",
+                            st.session_state.plan.to_csv(index=False).encode("utf-8-sig"),
+                            "ozon_fbo_plan.csv", "text/csv",
+                        )
+                        st.warning("Доступность складов, ограничения маршрутов и зарубежные направления ещё не проверены.")
+                    else:
+                        st.session_state.pop("plan", None)
+                        st.session_state.pop("plan_sku", None)
+                        st.caption("Для этих исходных данных ещё нет расчёта. Нажми «Рассчитать».")
 
     st.caption("Метод 2 вынесен на первую вкладку «🚀 Метод 2».")
 
