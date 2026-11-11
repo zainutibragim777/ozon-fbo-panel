@@ -1,5 +1,6 @@
-"""Личная панель планирования Ozon FBO. API только для чтения, без создания заявок."""
+"""Панель Ozon FBO: расчёт планов и независимые очереди поставок двух методов."""
 import hmac
+import hashlib
 import math
 import json
 import time
@@ -44,13 +45,15 @@ def calculate(rows, quantity, minimum):
     raise ValueError("Нет кластеров, проходящих минимальный порог. Требуется решение вручную.")
 
 st.title("📦 Ozon FBO Control")
-st.caption("Метод 2: выбирай товар, Excel, диапазон дат и времени, затем создавай отдельные поставки. Метод 1 не изменён.")
+st.caption("Метод 1 и Метод 2 работают независимо: каждый считает свой план и создаёт свои поставки.")
 st.info("Постоянная точка отгрузки: КАЗАНЬ_АЭРОПОРТ_КРОССДОКИНГ")
 from io import BytesIO
 import method1_state as method1_store
 from method1_validation import has_only_finite_numbers
 from method1_report import read_method1_report, suggest_method1_column
-from method2_supply import render_method2, queue_worker
+from method2_supply import render_method2, queue_worker, catalog as ozon_catalog, cluster_ids as ozon_cluster_ids, _clean as clean_ozon_name
+from method1_supply import render_method1_queue
+import method1_supply_state as method1_supply_store
 
 tab_method2, tab_plan, tab_stocks, tab_sales, tab_rules, tab_warehouses = st.tabs(
     ["🚀 Метод 2", "📊 Метод 1", "📦 Остатки Ozon", "📈 Продажи Ozon", "⚙️ Правила", "🚚 Склады"]
@@ -194,6 +197,106 @@ with tab_plan:
                             st.session_state.plan.to_csv(index=False).encode("utf-8-sig"),
                             "ozon_fbo_plan.csv", "text/csv",
                         )
+                        st.markdown("### Создать поставки по Методу 1")
+                        st.caption("Метод 1 создаёт собственные заявки по рассчитанным кластерам. Его очередь отдельна от очереди Метода 2.")
+                        api_client = str(st.secrets.get("OZON_CLIENT_ID") or "")
+                        api_key = str(st.secrets.get("OZON_API_KEY") or "")
+                        mapped_rows = []
+                        selected_goods = None
+                        if not api_client or not api_key:
+                            st.error("Для создания заявок не настроен доступ к Ozon API.")
+                        else:
+                            try:
+                                goods = ozon_catalog(api_client, api_key)
+                                product_key = " ".join(str(sku).strip().casefold().replace("ё", "е").split())
+                                exact_skus = [candidate for candidate, item in goods.items()
+                                              if product_key in {
+                                                  " ".join(str(item.get("article", "")).strip().casefold().replace("ё", "е").split()),
+                                                  " ".join(str(item.get("name", "")).strip().casefold().replace("ё", "е").split()),
+                                              }]
+                                candidates = exact_skus or sorted(goods, key=lambda value: (goods[value]["article"].casefold(), int(value)))
+                                selected_sku = st.selectbox(
+                                    "Соответствие товару в Ozon (проверь артикул и SKU)",
+                                    [None] + candidates,
+                                    format_func=lambda value: "Выбери совпадение..." if value is None else (
+                                        f"{goods[value]['article']} · {goods[value]['name']} · SKU {value}"
+                                    ),
+                                    key="method1_ozon_sku",
+                                )
+                                selected_goods = goods.get(selected_sku) if selected_sku else None
+                                if not exact_skus:
+                                    st.warning("Точного совпадения названия с Ozon нет. Выбери правильный товар в списке и сверь артикул/SKU перед подтверждением.")
+                                if selected_goods:
+                                    st.caption(f"Будут использованы: {selected_goods['article']} · SKU Ozon {selected_sku}.")
+                                cluster_mapping = ozon_cluster_ids(api_client, api_key)
+                                for row in cached_plan["rows"]:
+                                    cluster = str(row["Кластер"])
+                                    cluster_id = cluster_mapping.get(clean_ozon_name(cluster))
+                                    mapped_rows.append({
+                                        "Кластер": cluster,
+                                        "Отправить, шт.": int(row["Отправить, шт."]),
+                                        "ID Ozon": cluster_id,
+                                    })
+                            except Exception as error:
+                                st.error(f"Не удалось сверить товар и кластеры с Ozon: {error}")
+                        unmapped = [row["Кластер"] for row in mapped_rows if not row["ID Ozon"]]
+                        if unmapped:
+                            st.error("Ozon не подтвердил кластеры: " + ", ".join(unmapped))
+                        st.write("**Даты приёмки (МСК)**")
+                        today_local = datetime.now(timezone(timedelta(hours=3))).date()
+                        schedule_cols = st.columns(2)
+                        start_day = schedule_cols[0].date_input(
+                            "Дата с", value=today_local + timedelta(days=1), min_value=today_local,
+                            key="method1_supply_date_from",
+                        )
+                        end_day = schedule_cols[1].date_input(
+                            "Дата по", value=today_local + timedelta(days=10), min_value=today_local,
+                            key="method1_supply_date_to",
+                        )
+                        time_cols = st.columns(2)
+                        time_from = time_cols[0].time_input("Время с", value=datetime.strptime("08:00", "%H:%M").time(), key="method1_supply_time_from")
+                        time_to = time_cols[1].time_input("Время по", value=datetime.strptime("22:00", "%H:%M").time(), key="method1_supply_time_to")
+                        queue = method1_supply_store.read_plan()
+                        if queue:
+                            st.warning("У Метода 1 уже есть отдельная сохранённая очередь. Новая не создаётся, чтобы не задублировать заявки.")
+                        confirmed = st.checkbox(
+                            f"Подтверждаю создание {len(mapped_rows)} отдельных заявок на {sum(row['Отправить, шт.'] for row in mapped_rows)} шт.",
+                            key="method1_supply_confirm",
+                        )
+                        valid_window = (
+                            start_day <= end_day and (end_day - start_day).days <= 13
+                            and time_from < time_to
+                        )
+                        if not valid_window:
+                            st.error("Выбери корректный диапазон дат (не более 14 дней) и времени.")
+                        if st.button(
+                            "🚀 СОЗДАТЬ ПОСТАВКИ МЕТОДА 1", type="primary",
+                            key="method1_create_supplies",
+                            disabled=(bool(queue) or not confirmed or not selected_goods or bool(unmapped)
+                                      or not mapped_rows or not valid_window or not api_client or not api_key),
+                        ):
+                            rows_for_supply = [row for row in mapped_rows if row["ID Ozon"]]
+                            identity = {
+                                "sku": int(selected_goods["sku"]),
+                                "article": selected_goods["article"],
+                                "name": selected_goods["name"],
+                                "quantity": sum(row["Отправить, шт."] for row in rows_for_supply),
+                                "signature": calculation_signature,
+                            }
+                            window = [start_day.isoformat(), end_day.isoformat(),
+                                      time_from.strftime("%H:%M"), time_to.strftime("%H:%M")]
+                            queue_signature = hashlib.sha256(json.dumps(
+                                {"identity": identity, "rows": rows_for_supply, "window": window},
+                                sort_keys=True, ensure_ascii=False,
+                            ).encode("utf-8")).hexdigest()
+                            created_queue, was_created = method1_supply_store.start_plan(
+                                queue_signature, identity, rows_for_supply, window,
+                            )
+                            if was_created:
+                                st.success("Очередь Метода 1 сохранена отдельно. Начинается проверка и создание заявок в Ozon.")
+                            else:
+                                st.warning("Очередь Метода 1 уже существует, повторный запуск заблокирован.")
+                            st.rerun()
                         st.warning("Доступность складов, ограничения маршрутов и зарубежные направления ещё не проверены.")
                     else:
                         st.session_state.pop("plan", None)
@@ -201,6 +304,7 @@ with tab_plan:
                         st.caption("Для этих исходных данных ещё нет расчёта. Нажми «Рассчитать».")
 
     st.caption("Метод 2 вынесен на первую вкладку «🚀 Метод 2».")
+    render_method1_queue()
 
 with tab_stocks:
     st.subheader("Актуальные остатки FBO")
