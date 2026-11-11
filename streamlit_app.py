@@ -48,6 +48,8 @@ st.caption("Метод 2: выбирай товар, Excel, диапазон д�
 st.info("Постоянная точка отгрузки: КАЗАНЬ_АЭРОПОРТ_КРОССДОКИНГ")
 from io import BytesIO
 import method1_state as method1_store
+from method1_validation import has_only_finite_numbers
+from method1_report import read_method1_report, suggest_column
 from method2_supply import render_method2, queue_worker
 
 tab_method2, tab_plan, tab_stocks, tab_sales, tab_rules, tab_warehouses = st.tabs(
@@ -67,21 +69,21 @@ with tab_plan:
         if uploaded is None:
             st.success(f"Восстановлен предыдущий файл: {saved_report['name']}. Загружать заново не нужно.")
         try:
-            report_bytes = BytesIO(saved_report["content"])
-            df = pd.read_excel(report_bytes) if saved_report["name"].lower().endswith(".xlsx") else pd.read_csv(report_bytes)
+            df = read_method1_report(saved_report["content"], saved_report["name"])
             if df.empty:
                 raise ValueError("Файл пустой.")
-        except Exception:
-            st.error("Не удалось прочитать сохранённый файл. Загрузи исправленную версию.")
+        except Exception as error:
+            st.error(f"Не удалось прочитать сохранённый файл: {error}")
             st.session_state.pop("plan", None)
             st.session_state.pop("plan_sku", None)
         else:
             columns = list(df.columns)
-            def select_column(title, key, patterns):
+            def select_column(title, key, patterns, preferred_tokens=(), excluded_tokens=()):
                 saved_choice = method1_store.get_setting("method1_" + key)
-                preferred = next(
-                    (column for column in columns if str(column) == saved_choice),
-                    next((column for column in columns if any(p in str(column).lower() for p in patterns)), columns[0])
+                preferred = suggest_column(
+                    columns, saved_choice, patterns,
+                    preferred_tokens=preferred_tokens,
+                    excluded_tokens=excluded_tokens,
                 )
                 selected = st.selectbox(title, columns, index=columns.index(preferred), key=key)
                 method1_store.set_setting("method1_" + key, str(selected))
@@ -89,7 +91,7 @@ with tab_plan:
 
             sku_col = select_column("Товар / артикул", "sku_column", ["артикул", "sku", "товар"])
             cluster_col = select_column("Кластер", "cluster_column", ["кластер", "регион", "город"])
-            daily_col = select_column("Среднесуточные продажи, ШТУК в день", "daily_column", ["среднесут", "шт./день", "штук в день"])
+            daily_col = select_column("Среднесуточные продажи, ШТУК в день", "daily_column", ["среднесут", "шт./день", "штук в день"], preferred_tokens=("шт", "штук"), excluded_tokens=("руб",))
             stock_col = select_column("Остатки FBO, ШТУК", "stock_column", ["остаток fbo", "fbo"])
 
             if len({sku_col, cluster_col, daily_col, stock_col}) != 4:
@@ -146,8 +148,14 @@ with tab_plan:
                         subset = df.loc[df[sku_col].astype(str) == sku, [cluster_col, daily_col, stock_col]].copy()
                         subset[daily_col] = pd.to_numeric(subset[daily_col], errors="coerce")
                         subset[stock_col] = pd.to_numeric(subset[stock_col], errors="coerce")
-                        if subset[[daily_col, stock_col]].isna().any().any() or (subset[[daily_col, stock_col]] < 0).any().any():
-                            st.error("В продажах или остатках есть пустые, отрицательные или нечисловые значения.")
+                        invalid_values = (
+                            subset[[daily_col, stock_col]].isna().any().any()
+                            or (subset[[daily_col, stock_col]] < 0).any().any()
+                            or not has_only_finite_numbers(subset[daily_col])
+                            or not has_only_finite_numbers(subset[stock_col])
+                        )
+                        if invalid_values:
+                            st.error("В продажах или остатках есть пустые, отрицательные, бесконечные или нечисловые значения.")
                         else:
                             grouped = subset.groupby(cluster_col, as_index=False)[[daily_col, stock_col]].sum()
                             rows = [
@@ -226,8 +234,9 @@ with tab_plan:
                 raise ValueError("Один кластер указан несколько раз. Объедини его в одну строку.")
             for field in ("Продажи, шт./день", "Остаток FBO, шт."):
                 manual_table[field] = pd.to_numeric(manual_table[field], errors="coerce")
-                if manual_table[field].isna().any() or (manual_table[field] < 0).any():
-                    raise ValueError(f"Проверь значения в столбце «{field}».")
+                if (manual_table[field].isna().any() or (manual_table[field] < 0).any()
+                        or not has_only_finite_numbers(manual_table[field])):
+                    raise ValueError(f"В столбце «{field}» есть пустые, отрицательные, бесконечные или нечисловые значения.")
             if (manual_table["Остаток FBO, шт."] % 1 != 0).any():
                 raise ValueError("Остатки должны быть целыми штуками.")
             excluded_cities = manual_table["Кластер"].str.contains("самара|махачкала", case=False, na=False)
