@@ -214,7 +214,7 @@ with tab_plan:
             "category_geo_result_new", "category_geo_result_qty_new",
             "category_geo_result_sku", "category_geo_result_offer_id",
             "technical_draft_id", "technical_draft_signature", "technical_draft_info",
-            "preflight_export", "selected_cluster_slots",
+            "preflight_export", "preflight_export_signature", "selected_cluster_slots",
         ):
             st.session_state.pop(session_key, None)
         st.session_state.category_geo_previous_choice = selected_category_sku
@@ -885,6 +885,10 @@ with tab_warehouses:
             st.success("Локальная проверка пройдена. Следующий этап: проверка возможности создания черновика через Ozon API.")
         else:
             st.warning("Есть незаполненные или неверные данные. К проверке в Ozon переходить нельзя.")
+        preflight_signature = (
+            source_key, new_product_sku.strip(), str(wish_date),
+            tuple((str(row["ID кластера Ozon"]), int(row["Отправить, шт."])) for _, row in matched_df.iterrows()),
+        )
         if st.button("Сформировать файл для проверки поставки", key="preflight_export_button", disabled=not ready_local):
             draft_export = matched_df.copy()
             draft_export["SKU Ozon"] = new_product_sku.strip()
@@ -894,7 +898,11 @@ with tab_warehouses:
             draft_export["Лимит Ozon"] = "Не проверено"
             draft_export["Таймслот Ozon"] = "Не проверено"
             st.session_state.preflight_export = draft_export
-        if "preflight_export" in st.session_state and ready_local:
+            st.session_state.preflight_export_signature = preflight_signature
+        if (
+            "preflight_export" in st.session_state and ready_local
+            and st.session_state.get("preflight_export_signature") == preflight_signature
+        ):
             st.download_button(
                 "Скачать план для проверки CSV",
                 st.session_state.preflight_export.to_csv(index=False).encode("utf-8-sig"),
