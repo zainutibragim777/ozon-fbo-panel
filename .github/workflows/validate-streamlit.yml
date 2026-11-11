@@ -12,6 +12,7 @@ on:
       - "tests/test_method1_state.py"
       - "tests/test_method1_report_format.py"
       - "tests/test_method1_validation.py"
+      - "tests/test_method1_calculate.py"
       - ".github/workflows/validate-streamlit.yml"
   workflow_dispatch:
 permissions:
@@ -35,3 +36,5 @@ jobs:
         run: PYTHONPATH=. python3 tests/test_method1_report_format.py
       - name: Test Method 1 input validation
         run: PYTHONPATH=. python3 tests/test_method1_validation.py
+      - name: Test Method 1 allocation boundaries
+        run: PYTHONPATH=. python3 tests/test_method1_calculate.py
