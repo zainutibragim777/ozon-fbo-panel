@@ -47,19 +47,20 @@ def setup():
 
 def save_report(filename, content):
     setup()
+    name = str(filename)
     data = bytes(content)
     digest = hashlib.sha256(data).hexdigest()
     with _LOCK, connect() as db:
-        old = db.execute("SELECT sha256 FROM report WHERE id=1").fetchone()
-        if old is not None and old["sha256"] == digest:
+        old = db.execute("SELECT filename, sha256 FROM report WHERE id=1").fetchone()
+        if old is not None and old["sha256"] == digest and old["filename"] == name:
             return digest, False
         db.execute(
             "INSERT INTO report(id,filename,content,sha256,saved_at) VALUES(1,?,?,?,?) "
             "ON CONFLICT(id) DO UPDATE SET filename=excluded.filename,"
             "content=excluded.content,sha256=excluded.sha256,saved_at=excluded.saved_at",
-            (str(filename), sqlite3.Binary(data), digest, datetime.now(timezone.utc).isoformat()),
+            (name, sqlite3.Binary(data), digest, datetime.now(timezone.utc).isoformat()),
         )
-        # Plan from an older file must never show for a changed report.
+        # A plan is tied to both the report content and its format/name.
         db.execute("DELETE FROM saved_plan WHERE kind='excel'")
         return digest, True
 
