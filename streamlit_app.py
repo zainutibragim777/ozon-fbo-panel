@@ -196,6 +196,8 @@ with tab_plan:
     sku_options = [""] + sorted(product_catalog, key=lambda sku: (
         (product_catalog[sku].get("offer_id") or "").casefold(), int(sku)
     ))
+    if st.session_state.get("category_geo_product_choice", "") not in sku_options:
+        st.session_state.category_geo_product_choice = ""
     selected_category_sku = st.selectbox(
         "Выбери товар Ozon (артикул / SKU)",
         sku_options,
@@ -811,8 +813,12 @@ with tab_warehouses:
         st.dataframe(matched_df, hide_index=True, use_container_width=True)
         matched = sum(item["Статус"] == "Совпало" for item in matches)
         st.info(f"Проверено макролокальных ID: {matched} из {len(matches)}. Отсутствующие ID не передаются в черновик.")
+        mapping_export = matched_df.copy()
+        if source_key == "category_geo_result_new":
+            mapping_export["SKU Ozon"] = str(st.session_state.get("category_geo_result_sku") or "")
+            mapping_export["Артикул продавца"] = str(st.session_state.get("category_geo_result_offer_id") or "")
         st.download_button(
-            "Скачать сопоставление CSV", matched_df.to_csv(index=False).encode("utf-8-sig"),
+            "Скачать сопоставление CSV", mapping_export.to_csv(index=False).encode("utf-8-sig"),
             "ozon_cluster_mapping.csv", "text/csv", key="download_cluster_mapping",
         )
 
@@ -836,10 +842,25 @@ with tab_warehouses:
         st.write(f"{'✅' if origin_ok else '❌'} Точка отгрузки Казань найдена однозначно.")
         st.write(f"{'✅' if minimum_ok else '❌'} Минимум 19 штук в каждом кластере.")
         st.write(f"{'✅' if unique_clusters_ok and no_excluded_cities else '❌'} Нет повторов кластеров, Самары и Махачкалы.")
-        new_product_sku = st.text_input(
-            "SKU товара для будущей проверки", value="2143372681", key="preflight_sku",
-            help="Укажи реальный числовой SKU Ozon. Это поле ничего не отправляет в Ozon."
+        if source_key == "category_geo_result_new":
+            new_product_sku = str(st.session_state.get("category_geo_result_sku") or "")
+            source_offer_id = str(st.session_state.get("category_geo_result_offer_id") or "")
+            st.write(f"**Товар из метода 2:** артикул продавца **{source_offer_id or '—'}**, SKU Ozon **{new_product_sku or 'НЕ ВЫБРАН'}**.")
+            st.caption("SKU привязан к выбранному товару. Здесь его нельзя поменять вручную.")
+        else:
+            new_product_sku = st.text_input(
+                "SKU Ozon для этого плана (обязательно)", value="", key="preflight_sku",
+                help="Не артикул продавца и не ID карточки. Введи именно SKU Ozon."
+            )
+        product_matches_plan = (
+            source_key != "category_geo_result_new"
+            or (
+                new_product_sku != ""
+                and new_product_sku == str(st.session_state.get("category_geo_product_choice") or "")
+            )
         )
+        if not product_matches_plan:
+            st.error("Товар поменялся после расчёта! Вернись в Метод 2 и рассчитай заново.")
         wish_date = st.date_input(
             "Желаемая дата отгрузки (НЕ подтверждена Ozon)",
             min_value=date.today(), value=date.today() + timedelta(days=7),
@@ -847,7 +868,7 @@ with tab_warehouses:
         )
         st.caption("Наличие свободного таймслота и лимиты для каждого кластера пока НЕ проверены.")
         numeric_sku = new_product_sku.strip().isdigit() and int(new_product_sku.strip()) > 0
-        ready_local = all_matched and origin_ok and minimum_ok and unique_clusters_ok and no_excluded_cities and numeric_sku
+        ready_local = all_matched and origin_ok and minimum_ok and unique_clusters_ok and no_excluded_cities and numeric_sku and product_matches_plan
         if ready_local:
             st.success("Локальная проверка пройдена. Следующий этап: проверка возможности создания черновика через Ozon API.")
         else:
