@@ -347,15 +347,15 @@ with tab_plan:
                         result = result.sort_values("Отправить, шт.", ascending=False)
                         st.session_state.category_geo_result_new = result
                         st.session_state.category_geo_result_qty_new = int(qty)
-                    st.session_state.category_geo_result_sku = selected_category_sku
-                    st.session_state.category_geo_result_offer_id = current_product.get("offer_id", "")
+                        st.session_state.category_geo_result_sku = selected_category_sku
+                        st.session_state.category_geo_result_offer_id = current_product.get("offer_id", "")
                     except ValueError as error:
                         st.session_state.pop("category_geo_result_new", None)
                         st.error(str(error))
                 if st.session_state.get("category_geo_result_sku") != selected_category_sku:
-                st.session_state.pop("category_geo_result_new", None)
-            if "category_geo_result_new" in st.session_state:
-                st.caption(f"Товар в плане: {current_product.get('offer_id') or '—'} · SKU Ozon {selected_category_sku}")
+                    st.session_state.pop("category_geo_result_new", None)
+                if "category_geo_result_new" in st.session_state:
+                    st.caption(f"Товар в плане: {current_product.get('offer_id') or '—'} · SKU Ozon {selected_category_sku}")
                     result = st.session_state.category_geo_result_new
                     st.dataframe(result, hide_index=True, use_container_width=True)
                     st.metric("Распределено, шт.", int(result["Отправить, шт."].sum()))
