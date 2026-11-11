@@ -486,10 +486,47 @@ def render_method2(calculate):
         min_value=today, max_value=today + timedelta(days=27),
         key="method2_date_range",
     )
-    times = st.select_slider(
-        "Диапазон времени (МСК) — выбирай на шкале, писать не нужно",
-        options=SLOTS, value=("08:00", "22:00"), key="method2_time_range",
+    st.caption("Время (МСК): выбери начало, затем конец диапазона в таблице — ничего писать не нужно.")
+    if "method2_time_start" not in st.session_state:
+        st.session_state.method2_time_start = "08:00"
+        st.session_state.method2_time_end = "22:00"
+        st.session_state.method2_time_next = "start"
+
+    def choose_hour(value):
+        if st.session_state.method2_time_next == "start":
+            if value == "24:00":
+                return
+            st.session_state.method2_time_start = value
+            st.session_state.method2_time_next = "end"
+        else:
+            if value <= st.session_state.method2_time_start:
+                st.session_state.method2_time_start = value
+                st.session_state.method2_time_next = "end"
+            else:
+                st.session_state.method2_time_end = value
+                st.session_state.method2_time_next = "start"
+
+    st.write(
+        f"**Выбрано: {st.session_state.method2_time_start}–"
+        f"{st.session_state.method2_time_end}** · "
+        + ("Нажми начало интервала" if st.session_state.method2_time_next == "start"
+           else "Теперь нажми конец интервала")
     )
+    for row_start in range(0, len(SLOTS), 6):
+        columns = st.columns(6, gap="small")
+        for index, hour in enumerate(SLOTS[row_start:row_start + 6]):
+            columns[index].button(
+                hour,
+                key=f"method2_hour_{hour}",
+                type="primary" if hour in (
+                    st.session_state.method2_time_start,
+                    st.session_state.method2_time_end,
+                ) else "secondary",
+                on_click=choose_hour,
+                args=(hour,),
+                use_container_width=True,
+            )
+    times = (st.session_state.method2_time_start, st.session_state.method2_time_end)
     if len(dates) != 2:
         st.info("Выбери начало и конец диапазона дат.")
         return
