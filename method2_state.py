@@ -7,6 +7,7 @@ write-ahead protected to prevent duplicates within this server lifetime.
 import json
 import os
 import sqlite3
+from contextlib import contextmanager
 import threading
 import time
 from datetime import datetime, timezone
@@ -20,14 +21,18 @@ _API_LIMIT_SECONDS = 40
 _MAX_PER_HOUR = 45
 
 
+@contextmanager
 def _conn():
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     db = sqlite3.connect(str(DB_PATH), timeout=30, isolation_level=None)
     db.row_factory = sqlite3.Row
-    db.execute("PRAGMA busy_timeout=30000")
-    db.execute("PRAGMA journal_mode=WAL")
-    db.execute("PRAGMA synchronous=FULL")
-    return db
+    try:
+        db.execute("PRAGMA busy_timeout=30000")
+        db.execute("PRAGMA journal_mode=WAL")
+        db.execute("PRAGMA synchronous=FULL")
+        yield db
+    finally:
+        db.close()
 
 
 def initialise():
@@ -154,6 +159,15 @@ def start_plan(signature, identity, rows, window):
                     "reason": "",
                     "order_id": None,
                 }
+                # The user already created a Moscow order for this SKU in
+                # the previous session; its order ID was not persisted.
+                # Never automatically re-create that destination.
+                if int(identity["sku"]) == 4357898852 and int(row["ID Ozon"]) == 4039:
+                    job["status"] = "NEEDS_REVIEW"
+                    job["reason"] = (
+                        "Москва уже отправлялась до сброса старой сессии. "
+                        "Проверяем существующую заявку Ozon; повторное создание запрещено."
+                    )
                 db.execute(
                     "INSERT INTO job(plan_id,cluster_id,body_json) VALUES(?,?,?)",
                     (plan_id, job["cluster_id"], json.dumps(job, ensure_ascii=False)),
