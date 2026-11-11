@@ -4,7 +4,9 @@ on:
     paths:
       - "streamlit_app.py"
       - "method2_supply.py"
+      - "method2_state.py"
       - "tests/test_method2.py"
+      - "tests/test_method2_state.py"
       - ".github/workflows/validate-streamlit.yml"
   workflow_dispatch:
 permissions:
@@ -15,8 +17,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Check Python syntax before using the dashboard
-        run: python3 -m py_compile streamlit_app.py method2_supply.py
+        run: python3 -m py_compile streamlit_app.py method2_supply.py method2_state.py
       - name: Install test dependencies
         run: pip install -r requirements.txt
       - name: Test Method 2 with mocked Ozon
         run: PYTHONPATH=. python3 tests/test_method2.py
+      - name: Test queue persistence after a page refresh
+        run: PYTHONPATH=. python3 tests/test_method2_state.py
