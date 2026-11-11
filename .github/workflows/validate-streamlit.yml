@@ -3,6 +3,7 @@ on:
   push:
     paths:
       - "streamlit_app.py"
+      - "method2_supply.py"
       - ".github/workflows/validate-streamlit.yml"
   workflow_dispatch:
 permissions:
@@ -13,4 +14,4 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Check Python syntax before using the dashboard
-        run: python3 -m py_compile streamlit_app.py
+        run: python3 -m py_compile streamlit_app.py method2_supply.py
