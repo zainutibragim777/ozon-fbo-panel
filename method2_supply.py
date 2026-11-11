@@ -400,6 +400,18 @@ def render_method2(calculate):
     if not client or not key:
         st.error("Не настроен доступ к API Ozon.")
         return
+    store.ensure_worker(client, key)
+    active = store.read_plan()
+    if active:
+        st.success("Текущий план и все статусы уже сохранены. Заново выбирать товар и загружать Excel не нужно.")
+        st.info(
+            f"SKU {active['identity']['sku']} · "
+            f"артикул {active['identity'].get('article') or '—'} · "
+            f"отгружаем {active['identity']['quantity']} шт. "
+            f"на {len(active['jobs'])} отдельных направлений."
+        )
+        st.caption("Сохранённая таблица поставок отображается ниже, с номерами заявок Ozon.")
+        return
 
     st.markdown("**1. Выбор товара**")
     try:
@@ -409,6 +421,9 @@ def render_method2(calculate):
         st.error(f"Не удалось получить товары из Ozon: {error}")
         return
     names = [None] + sorted(goods, key=lambda s: (goods[s]["article"].casefold(), int(s)))
+    recent_sku = store.pref_get("last_sku")
+    if "method2_sku" not in st.session_state and recent_sku in names:
+        st.session_state.method2_sku = recent_sku
     sku = st.selectbox(
         "Товар / артикул / SKU",
         names,
@@ -422,6 +437,8 @@ def render_method2(calculate):
         st.info("Выбери товар в списке. Остальные шаги откроются автоматически.")
         return
     chosen = goods[sku]
+    if store.pref_get("last_sku") != sku:
+        store.pref_set("last_sku", sku)
     st.caption(f"Артикул продавца: {chosen['article']} · SKU Ozon: **{sku}**")
 
     st.markdown("**2. Загрузка географии и долей категории**")
@@ -429,11 +446,21 @@ def render_method2(calculate):
         "Excel Ozon: Аналитика категорий → География (Мой магазин выключен)",
         type=["xlsx"], key=f"method2_geography_{sku}",
     )
-    if not document:
+    saved_file = store.file_get(sku)
+    if not document and not saved_file:
         return
+    if f"method2_qty_{sku}" not in st.session_state and saved_file:
+        st.session_state[f"method2_qty_{sku}"] = max(19, int(saved_file[2]))
     qty = st.number_input("Количество для отправки, шт.", min_value=19, value=1650, step=1, key=f"method2_qty_{sku}")
+    data_bytes = document.getvalue() if document else saved_file[0]
+    if document:
+        digest = hashlib.sha256(data_bytes).hexdigest()
+        store.file_save(sku, data_bytes, digest, qty)
+    else:
+        st.success("Excel восстановлен из сохранённых данных. Повторно загружать его не нужно.")
+        if saved_file[2] != qty:
+            store.file_save(sku, data_bytes, saved_file[1], qty)
     try:
-        data_bytes = document.getvalue()
         eligible, excluded = parse_geography(data_bytes)
         mapping = cluster_ids(client, key)
         result = calculate(
