@@ -174,7 +174,8 @@ def _date_hours_allowed(slot, start_date, end_date, time_from, time_to):
         ends = datetime.fromisoformat(str(slot["to_in_timezone"]))
     except (KeyError, TypeError, ValueError):
         return False
-    if not start_date <= begins.date() <= end_date or begins <= datetime.now(MOSCOW).replace(tzinfo=None):
+    comparison_start = begins if begins.tzinfo is not None else begins.replace(tzinfo=MOSCOW)
+    if not start_date <= begins.date() <= end_date or comparison_start <= datetime.now(MOSCOW):
         return False
     b = begins.strftime("%H:%M")
     e = ends.strftime("%H:%M") if ends.date() == begins.date() else "24:00"
