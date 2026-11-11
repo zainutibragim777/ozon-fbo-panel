@@ -53,8 +53,7 @@ tab_method2, tab_plan, tab_stocks, tab_sales, tab_rules, tab_warehouses = st.tab
 )
 with tab_method2:
     render_method2(calculate)
-    if st.session_state.get("method2_supply_queue"):
-        queue_worker()
+    queue_worker()
 with tab_plan:
     uploaded = st.file_uploader("Загрузи Excel или CSV с продажами и остатками", type=["xlsx", "csv"])
     if uploaded is not None:
