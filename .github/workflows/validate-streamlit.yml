@@ -7,12 +7,14 @@ on:
       - "method2_state.py"
       - "method1_state.py"
       - "method1_validation.py"
+      - "method1_report.py"
       - "tests/test_method2.py"
       - "tests/test_method2_state.py"
       - "tests/test_method1_state.py"
       - "tests/test_method1_report_format.py"
       - "tests/test_method1_validation.py"
       - "tests/test_method1_calculate.py"
+      - "tests/test_method1_report.py"
       - ".github/workflows/validate-streamlit.yml"
   workflow_dispatch:
 permissions:
@@ -38,3 +40,5 @@ jobs:
         run: PYTHONPATH=. python3 tests/test_method1_validation.py
       - name: Test Method 1 allocation boundaries
         run: PYTHONPATH=. python3 tests/test_method1_calculate.py
+      - name: Test Method 1 Ozon report parsing
+        run: PYTHONPATH=. python3 tests/test_method1_report.py
