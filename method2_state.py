@@ -159,15 +159,6 @@ def start_plan(signature, identity, rows, window):
                     "reason": "",
                     "order_id": None,
                 }
-                # The user already created a Moscow order for this SKU in
-                # the previous session; its order ID was not persisted.
-                # Never automatically re-create that destination.
-                if int(identity["sku"]) == 4357898852 and int(row["ID Ozon"]) == 4039:
-                    job["status"] = "NEEDS_REVIEW"
-                    job["reason"] = (
-                        "Москва уже отправлялась до сброса старой сессии. "
-                        "Проверяем существующую заявку Ozon; повторное создание запрещено."
-                    )
                 db.execute(
                     "INSERT INTO job(plan_id,cluster_id,body_json) VALUES(?,?,?)",
                     (plan_id, job["cluster_id"], json.dumps(job, ensure_ascii=False)),
