@@ -139,16 +139,22 @@ def parse_geography(file_bytes):
     data["Кластер"] = data["Кластер"].fillna("").astype(str).str.strip()
 
     def percent(value):
+        # Ozon inserts an explanatory row directly under the table header:
+        # "Процент от общей суммы заказов — с учётом примененных фильтров".
+        # It is not a numeric cluster share and must be ignored.
         if pd.isna(value):
             return float("nan")
-        if isinstance(value, str):
-            part = value.replace("\u00a0", "").replace(" ", "").replace(",", ".").strip()
-            if part.endswith("%"):
-                return float(part[:-1])
-            x = float(part)
-        else:
-            x = float(value)
-        return x * 100 if 0 <= x <= 1 else x
+        try:
+            if isinstance(value, str):
+                part = value.replace("\u00a0", "").replace(" ", "").replace(",", ".").strip()
+                if part.endswith("%"):
+                    return float(part[:-1])
+                x = float(part)
+            else:
+                x = float(value)
+            return x * 100 if 0 <= x <= 1 else x
+        except (TypeError, ValueError, OverflowError):
+            return float("nan")
 
     data["Доля, %"] = pd.to_numeric(data["Доля, %"].map(
         lambda v: percent(v) if str(v).strip() else float("nan")
