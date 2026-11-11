@@ -515,8 +515,6 @@ def render_method2(calculate):
         st.session_state.method2_next_attempt_at = 0
         st.success("Создание отдельных реальных поставок запущено. Первую попытку выполняем сейчас.")
 
-    if st.session_state.get("method2_supply_queue"):
-        queue_worker()
-    else:
-        st.markdown("**6. Повторные попытки**")
+    st.markdown("**6. Повторные попытки**")
+    if not st.session_state.get("method2_supply_queue"):
         st.caption("После нажатия кнопки недоступные направления попадут в очередь. Повторы — каждые 3 минуты в активной сессии.")
