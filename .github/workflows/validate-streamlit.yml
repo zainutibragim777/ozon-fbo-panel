@@ -1,0 +1,16 @@
+name: Validate Streamlit dashboard Python
+on:
+  push:
+    paths:
+      - "streamlit_app.py"
+      - ".github/workflows/validate-streamlit.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check Python syntax before using the dashboard
+        run: python3 -m py_compile streamlit_app.py
