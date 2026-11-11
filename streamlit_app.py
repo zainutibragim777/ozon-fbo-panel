@@ -55,6 +55,8 @@ from method2_supply import render_method2, queue_worker
 tab_method2, tab_plan, tab_stocks, tab_sales, tab_rules, tab_warehouses = st.tabs(
     ["🚀 Метод 2", "📊 Метод 1", "📦 Остатки Ozon", "📈 Продажи Ozon", "⚙️ Правила", "🚚 Склады"]
 )
+method1_report_columns = None
+method1_column_defaults = {}
 with tab_method2:
     render_method2(calculate)
     queue_worker()
@@ -78,22 +80,29 @@ with tab_plan:
             st.session_state.pop("plan_sku", None)
         else:
             columns = list(df.columns)
-            def select_column(title, key, role):
-                saved_choice = method1_store.get_setting("method1_" + key)
-                preferred = suggest_method1_column(columns, role, saved_choice)
-                selected = st.selectbox(title, columns, index=columns.index(preferred), key=key)
-                method1_store.set_setting("method1_" + key, str(selected))
-                return selected
+            method1_report_columns = columns
+            column_roles = {
+                "sku_column": "product",
+                "cluster_column": "cluster",
+                "daily_column": "daily_sales",
+                "stock_column": "fbo_stock",
+            }
+            for key, role in column_roles.items():
+                current_choice = st.session_state.get(key)
+                saved_choice = (
+                    current_choice if current_choice in columns
+                    else method1_store.get_setting("method1_" + key)
+                )
+                method1_column_defaults[key] = suggest_method1_column(columns, role, saved_choice)
 
-            sku_col = select_column("Товар / артикул", "sku_column", "product")
-            cluster_col = select_column("Кластер", "cluster_column", "cluster")
-            daily_col = select_column("Среднесуточные продажи, ШТУК в день", "daily_column", "daily_sales")
-            stock_col = select_column("Остатки FBO, ШТУК", "stock_column", "fbo_stock")
+            def selected_column(key):
+                current_choice = st.session_state.get(key)
+                return current_choice if current_choice in columns else method1_column_defaults[key]
 
-            st.caption(
-                "Эти столбцы связывают данные Excel: товар, кластер, продажи в штуках в день "
-                "и остаток FBO в штуках. Обычно выбирать их вручную не нужно."
-            )
+            sku_col = selected_column("sku_column")
+            cluster_col = selected_column("cluster_column")
+            daily_col = selected_column("daily_column")
+            stock_col = selected_column("stock_column")
             if len({sku_col, cluster_col, daily_col, stock_col}) != 4:
                 st.warning("Нужно выбрать четыре разных столбца.")
                 st.session_state.pop("plan", None)
@@ -308,6 +317,34 @@ with tab_rules:
     st.write("Учитываем среднесуточные продажи в штуках и остатки FBO.")
     st.write("Один город — один склад назначения. Товары объединяем, если склад принимает всё.")
     st.write("Количество не уменьшаем без нового согласования.")
+    st.divider()
+    st.subheader("Столбцы Excel для метода 1")
+    if method1_report_columns:
+        st.caption(
+            "Приложение обычно определяет их само. Меняй только если заголовки в Excel "
+            "подобрались неверно. Продажи выбирай в штуках, не в рублях."
+        )
+        column_settings = [
+            ("sku_column", "Товар / артикул", "product"),
+            ("cluster_column", "Кластер", "cluster"),
+            ("daily_column", "Среднесуточные продажи, шт. в день", "daily_sales"),
+            ("stock_column", "Остатки FBO, шт.", "fbo_stock"),
+        ]
+        selected_columns = []
+        for key, title, role in column_settings:
+            default_column = method1_column_defaults[key]
+            selected = st.selectbox(
+                title,
+                method1_report_columns,
+                index=method1_report_columns.index(default_column),
+                key=key,
+            )
+            method1_store.set_setting("method1_" + key, str(selected))
+            selected_columns.append(selected)
+        if len(set(selected_columns)) != len(selected_columns):
+            st.warning("Для расчёта выбери четыре разных столбца.")
+    else:
+        st.info("Сначала загрузи Excel или CSV во вкладке «Метод 1».")
 with tab_warehouses:
     current_selected_sku = str(st.session_state.get("category_geo_result_sku") or "")
     selected_in_picker = str(st.session_state.get("category_geo_product_choice") or "")
