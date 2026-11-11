@@ -51,6 +51,40 @@ def suggest_column(columns, saved_choice=None, patterns=(), preferred_tokens=(),
     return matched if matched is not None else (allowed[0] if allowed else columns[0])
 
 
+def suggest_method1_column(columns, role, saved_choice=None):
+    """Choose the correct Ozon report column for a Method 1 input."""
+    rules = {
+        "product": {
+            "patterns": ("название товара", "артикул", "sku", "товар"),
+        },
+        "cluster": {
+            "patterns": ("кластер", "регион", "город"),
+            "preferred_tokens": ("кластер",),
+        },
+        "daily_sales": {
+            "patterns": ("среднесут", "шт./день", "штук в день"),
+            "preferred_tokens": ("шт", "штук"),
+            "excluded_tokens": ("руб",),
+        },
+        "fbo_stock": {
+            "patterns": ("остаток fbo", "fbo"),
+            "preferred_tokens": ("остаток fbo, шт", "остатки fbo, шт"),
+            "excluded_tokens": ("до конца", "дн", "дней", "fbs", "в пути"),
+        },
+    }
+    if role not in rules:
+        raise ValueError(f"Unknown Method 1 column role: {role}")
+    rule = rules[role]
+    if role == "product":
+        product_name = next(
+            (column for column in columns if "название товара" in _normalise_header(column)),
+            None,
+        )
+        if product_name is not None:
+            return product_name
+    return suggest_column(columns, saved_choice, **rule)
+
+
 def read_method1_report(content, filename):
     """Read CSV/XLSX with Ozon's metadata rows above the actual table header."""
     import pandas as pd
