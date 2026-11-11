@@ -491,6 +491,15 @@ def render_method2(calculate):
 
     st.markdown("**4. Выбор диапазона дат и времени**")
     today = datetime.now(MOSCOW).date()
+    previous_window = store.pref_get("last_window")
+    if "method2_date_range" not in st.session_state and previous_window:
+        try:
+            remembered_start = max(today, date.fromisoformat(previous_window[0]))
+            remembered_end = max(remembered_start, date.fromisoformat(previous_window[1]))
+            if remembered_end <= today + timedelta(days=27):
+                st.session_state.method2_date_range = (remembered_start, remembered_end)
+        except (ValueError, IndexError, TypeError):
+            pass
     dates = st.date_input(
         "Диапазон дат приёмки",
         value=(today + timedelta(days=1), today + timedelta(days=10)),
@@ -499,8 +508,9 @@ def render_method2(calculate):
     )
     st.caption("Время (МСК): выбери начало, затем конец диапазона в таблице — ничего писать не нужно.")
     if "method2_time_start" not in st.session_state:
-        st.session_state.method2_time_start = "08:00"
-        st.session_state.method2_time_end = "22:00"
+        times_prev = store.pref_get("last_window") or []
+        st.session_state.method2_time_start = times_prev[2] if len(times_prev) == 4 and times_prev[2] in SLOTS else "08:00"
+        st.session_state.method2_time_end = times_prev[3] if len(times_prev) == 4 and times_prev[3] in SLOTS else "22:00"
         st.session_state.method2_time_next = "start"
 
     def choose_hour(value):
@@ -557,34 +567,29 @@ def render_method2(calculate):
         "time_from": times[0], "time_to": times[1],
     }
     signature = hashlib.sha256(json.dumps(identity, sort_keys=True).encode("utf-8")).hexdigest()
+    window = (begin_day.isoformat(), end_day.isoformat(), times[0], times[1])
+    if store.pref_get("last_window") != list(window):
+        store.pref_set("last_window", list(window))
 
     st.markdown("**5. Создать поставку**")
     st.info(f"Будут созданы **{len(rows)} отдельные заявки Ozon**, по одной на кластер, для SKU **{sku}**. Точка отгрузки: Казань Аэропорт.")
-    existing_queue = st.session_state.get("method2_supply_queue") or []
-    already_submitted = any(row["status"] in ("CREATED", "VERIFYING", "SUBMITTING", "NEEDS_REVIEW") for row in existing_queue)
-    same_plan = st.session_state.get("method2_active_signature") == signature
-    if existing_queue and not same_plan:
-        st.warning("У тебя уже есть очередь по другому плану. Новые заявки заблокированы, чтобы не создать дубли.")
+    saved_plan = store.read_plan()
+    if saved_plan:
+        st.warning("На сервере уже хранится очередь. Повторное создание заблокировано.")
     if st.button(
         "🚀 СОЗДАТЬ ПОСТАВКИ",
         key="method2_create_real",
         type="primary",
-        disabled=bool(existing_queue),
-        help="Реальные заявки создаются по одной на кластер. Даты и время перепроверяются перед каждой отправкой.",
+        disabled=bool(saved_plan),
+        help="Поставки создаются по одной на кластер с сохранением каждого статуса до отправки API.",
     ):
-        st.session_state.method2_supply_queue = [{
-            "name": row["Кластер"], "cluster_id": int(row["ID Ozon"]),
-            "sku": int(sku), "quantity": int(row["Отправить, шт."]),
-            "attempts": 0, "status": "WAITING",
-            "reason": "", "order_id": None,
-        } for row in rows]
-        st.session_state.method2_active_signature = signature
-        st.session_state.method2_window = (
-            begin_day.isoformat(), end_day.isoformat(), times[0], times[1]
-        )
-        st.session_state.method2_next_attempt_at = 0
-        st.success("Создание отдельных реальных поставок запущено. Первую попытку выполняем сейчас.")
+        existing, created = store.start_plan(signature, identity, rows, window)
+        if created:
+            store.ensure_worker(client, key)
+            st.success("План и очередь сохранены на сервере. Можно обновлять страницу — повторять настройку не нужно.")
+        else:
+            st.warning("Очередь уже существует. Новая не создана, чтобы не дублировать заявки.")
+        st.rerun()
 
     st.markdown("**6. Повторные попытки**")
-    if not st.session_state.get("method2_supply_queue"):
-        st.caption("После нажатия кнопки недоступные направления попадут в очередь. Повторы — каждые 3 минуты в активной сессии.")
+    st.caption("После старта план и статусы сохраняются на сервере. Обновление вкладки не сбрасывает очередь. Недоступные направления проверяются примерно через 3 минуты.")
