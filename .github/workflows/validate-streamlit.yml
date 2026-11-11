@@ -9,6 +9,7 @@ on:
       - "tests/test_method2.py"
       - "tests/test_method2_state.py"
       - "tests/test_method1_state.py"
+      - "tests/test_method1_report_format.py"
       - ".github/workflows/validate-streamlit.yml"
   workflow_dispatch:
 permissions:
@@ -28,3 +29,5 @@ jobs:
         run: PYTHONPATH=. python3 tests/test_method2_state.py
       - name: Test Method 1 Excel and plan persistence
         run: PYTHONPATH=. python3 tests/test_method1_state.py
+      - name: Test Method 1 report format replacement
+        run: PYTHONPATH=. python3 tests/test_method1_report_format.py
