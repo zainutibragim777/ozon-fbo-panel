@@ -108,7 +108,6 @@ with tab_plan:
                 st.session_state.pop("plan", None)
                 st.session_state.pop("plan_sku", None)
             else:
-                st.caption("Важно: продажи должны быть в штуках в день, не в рублях.")
                 products = sorted(df[sku_col].dropna().astype(str).unique().tolist())
                 if not products:
                     st.error("В файле нет товаров.")
