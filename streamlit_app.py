@@ -232,13 +232,13 @@ with tab_plan:
     if selected_category_sku:
         geo_source = st.radio(
             "Источник процентов", ["Ввести доли вручную", "Excel из Ozon"],
-            horizontal=True, key="geo_source",
+            horizontal=True, index=1, key="geo_source",
         )
         geo = None
         if geo_source == "Excel из Ozon":
             category_file = st.file_uploader(
                 "Загрузи Excel: Аналитика категорий → География, «Мой магазин» выключен",
-                type=["xlsx"], key="category_geo_file",
+                type=["xlsx"], key=f"category_geo_file_{selected_category_sku}",
             )
             if category_file is not None:
                 try:
@@ -347,6 +347,8 @@ with tab_plan:
                         result = eligible[eligible["Кластер"].isin(plan)][["Кластер", "Доля, %"]].copy()
                         result["Отправить, шт."] = result["Кластер"].map(plan).astype(int)
                         result = result.sort_values("Отправить, шт.", ascending=False)
+                        result["SKU Ozon"] = selected_category_sku
+                        result["Артикул продавца"] = str(current_product.get("offer_id") or "")
                         st.session_state.category_geo_result_new = result
                         st.session_state.category_geo_result_qty_new = int(qty)
                         st.session_state.category_geo_result_sku = selected_category_sku
@@ -363,13 +365,13 @@ with tab_plan:
                     st.metric("Распределено, шт.", int(result["Отправить, шт."].sum()))
                     st.download_button(
                         "Скачать план по категории CSV", result.to_csv(index=False).encode("utf-8-sig"),
-                        "ozon_category_allocation.csv", "text/csv", key="category_download_v3",
+                        f"ozon_category_allocation_{selected_category_sku}.csv", "text/csv", key="category_download_v3",
                     )
                     st.warning("План предварительный, без проверки складов. При изменении исходных данных нажми «Рассчитать» снова. Заявки не создаются.")
             except ValueError as error:
                 st.error(str(error))
-    
-        st.divider()
+
+    st.divider()
     st.subheader("🐊 Быстрый расчёт по кластерам")
     st.caption("Пока Ozon не отдаёт географию продаж автоматически, введи продажи и остатки по кластерам вручную. Это предварительный расчёт, без создания поставок.")
     if "ozon_sales_rows" in st.session_state:
