@@ -17,6 +17,6 @@ jobs:
       - name: Check Python syntax before using the dashboard
         run: python3 -m py_compile streamlit_app.py method2_supply.py
       - name: Install test dependencies
-        run: pip install -r requirements.txt pytest
+        run: pip install -r requirements.txt
       - name: Test Method 2 with mocked Ozon
-        run: python3 -m pytest -q tests/test_method2.py
+        run: PYTHONPATH=. python3 tests/test_method2.py
