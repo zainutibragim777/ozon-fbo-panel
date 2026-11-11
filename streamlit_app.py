@@ -48,6 +48,7 @@ st.caption("Метод 2: выбирай товар, Excel, диапазон д�
 st.info("Постоянная точка отгрузки: КАЗАНЬ_АЭРОПОРТ_КРОССДОКИНГ")
 from io import BytesIO
 import method1_state as method1_store
+from method1_validation import has_only_finite_numbers
 from method2_supply import render_method2, queue_worker
 
 tab_method2, tab_plan, tab_stocks, tab_sales, tab_rules, tab_warehouses = st.tabs(
@@ -146,8 +147,14 @@ with tab_plan:
                         subset = df.loc[df[sku_col].astype(str) == sku, [cluster_col, daily_col, stock_col]].copy()
                         subset[daily_col] = pd.to_numeric(subset[daily_col], errors="coerce")
                         subset[stock_col] = pd.to_numeric(subset[stock_col], errors="coerce")
-                        if subset[[daily_col, stock_col]].isna().any().any() or (subset[[daily_col, stock_col]] < 0).any().any():
-                            st.error("В продажах или остатках есть пустые, отрицательные или нечисловые значения.")
+                        invalid_values = (
+                            subset[[daily_col, stock_col]].isna().any().any()
+                            or (subset[[daily_col, stock_col]] < 0).any().any()
+                            or not has_only_finite_numbers(subset[daily_col])
+                            or not has_only_finite_numbers(subset[stock_col])
+                        )
+                        if invalid_values:
+                            st.error("В продажах или остатках есть пустые, отрицательные, бесконечные или нечисловые значения.")
                         else:
                             grouped = subset.groupby(cluster_col, as_index=False)[[daily_col, stock_col]].sum()
                             rows = [
