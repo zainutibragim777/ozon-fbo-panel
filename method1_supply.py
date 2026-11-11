@@ -16,6 +16,19 @@ def process_once(client, key):
     if not plan:
         return
     jobs = plan["jobs"]
+    # A crash during draft/slot checks can be retried safely. An interrupted
+    # order submission is ambiguous and must never be retried automatically.
+    for job in jobs:
+        age = time.time() - float(job.get("last_attempt_epoch") or time.time())
+        if job.get("status") == "CHECKING" and age > 240:
+            job["status"] = "RETRY"
+            job["next_retry_at"] = time.time() + RETRY_SECONDS
+            job["reason"] = "Восстановлена проверка после сбоя (заявка ещё не отправлялась)"
+            store.save_job(job)
+        elif job.get("status") == "SUBMITTING" and age > 240:
+            job["status"] = "NEEDS_REVIEW"
+            job["reason"] = "Ответ Ozon после отправки неизвестен; повтор запрещён до сверки"
+            store.save_job(job)
     verifying = next((job for job in jobs if job.get("status") == "VERIFYING" and job.get("creation_draft_id")
                      and time.time() - float(job.get("last_verify_epoch") or 0) > 30), None)
     if verifying:
