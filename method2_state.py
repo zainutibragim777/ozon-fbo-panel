@@ -251,6 +251,21 @@ def _process_once(client, key):
         return
     jobs = plan["jobs"]
 
+    # A crash during the temporary-draft check is safe to retry: the actual
+    # order-create request is guarded by a separately persisted SUBMITTING state.
+    # If the prior process died after sending the order request, NEVER retry it.
+    for stuck in jobs:
+        age = time.time() - float(stuck.get("last_attempt_epoch") or time.time())
+        if stuck.get("status") == "CHECKING" and age > 240:
+            stuck["status"] = "RETRY"
+            stuck["next_retry_at"] = time.time() + _RETRY_EVERY
+            stuck["reason"] = "Восстановлена проверка после сбоя сервера (создание ещё не отправлялось)"
+            save_job(stuck)
+        if stuck.get("status") == "SUBMITTING" and age > 240:
+            stuck["status"] = "NEEDS_REVIEW"
+            stuck["reason"] = "Ответ Ozon после отправки неизвестен; повтор запрещён до сверки"
+            save_job(stuck)
+
     verifying = next(
         (job for job in jobs if job.get("status") == "VERIFYING" and job.get("creation_draft_id")
          and time.time() - float(job.get("last_verify_epoch") or 0) > 30),
