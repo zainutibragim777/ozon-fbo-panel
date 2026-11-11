@@ -37,7 +37,8 @@ def suggest_column(columns, saved_choice=None, patterns=(), preferred_tokens=(),
     if preferred_tokens:
         preferred = next(
             (column for column in allowed
-             if any(token in _normalise_header(column) for token in preferred_tokens)),
+             if any(token in _normalise_header(column) for token in preferred_tokens)
+             and any(pattern in _normalise_header(column) for pattern in patterns)),
             None,
         )
         if preferred is not None:
