@@ -20,6 +20,8 @@ ORIGIN_TYPE = "SORTING_CENTER"
 MOSCOW = timezone(timedelta(hours=3))
 MIN_CLUSTER = 19
 RETRY_SECONDS = 180
+RUN_INTERVAL_SECONDS = 40
+MAX_DRAFTS_PER_HOUR = 45
 SLOTS = [f"{hour:02d}:00" for hour in range(0, 24)] + ["24:00"]
 
 
@@ -333,7 +335,7 @@ def create_individual_supply(client, key, job, start_date, end_date, time_from, 
             job["reason"] = str(error)[:200]
 
 
-@st.fragment(run_every=180)
+@st.fragment(run_every=RUN_INTERVAL_SECONDS)
 def queue_worker():
     queue = st.session_state.get("method2_supply_queue") or []
     if not queue:
@@ -341,25 +343,44 @@ def queue_worker():
     st.subheader("6. Очередь поставок и повторные попытки")
     client = str(st.secrets.get("OZON_CLIENT_ID") or "")
     key = str(st.secrets.get("OZON_API_KEY") or "")
-    for job in queue:
-        if job.get("status") == "VERIFYING" and job.get("creation_draft_id"):
-            _check_order_status(client, key, job)
-            break
+    # Check submitted orders first. A submitted order is NEVER resubmitted.
+    verification = next((j for j in queue if j.get("status") == "VERIFYING" and j.get("creation_draft_id")), None)
+    if verification is not None:
+        _check_order_status(client, key, verification)
     else:
-        active = [row for row in queue if row["status"] in ("WAITING", "RETRY")]
-        if active:
-            # Every 180 s, try one destination. Ozon enforces request rate limits.
-            candidate = min(active, key=lambda row: (row["attempts"], row["cluster_id"]))
-            now_ts = time.time()
-            if now_ts >= st.session_state.get("method2_next_attempt_at", 0):
-                create_individual_supply(
-                    client, key, candidate,
-                    date.fromisoformat(st.session_state.method2_window[0]),
-                    date.fromisoformat(st.session_state.method2_window[1]),
-                    st.session_state.method2_window[2],
-                    st.session_state.method2_window[3],
-                )
-                st.session_state.method2_next_attempt_at = time.time() + RETRY_SECONDS
+        now_ts = time.time()
+        waiting = [j for j in queue if j["status"] == "WAITING"]
+        retries = [
+            j for j in queue
+            if j["status"] == "RETRY" and now_ts >= j.get("next_retry_at", 0)
+        ]
+        candidate = (
+            waiting[0] if waiting
+            else min(retries, key=lambda j: j.get("last_attempt_epoch", 0)) if retries else None
+        )
+        draft_history = st.session_state.get("method2_draft_history") or []
+        draft_history = [stamp for stamp in draft_history if stamp > now_ts - 3600]
+        st.session_state.method2_draft_history = draft_history
+        can_attempt = (
+            candidate is not None
+            and now_ts >= st.session_state.get("method2_next_attempt_at", 0)
+            and len(draft_history) < MAX_DRAFTS_PER_HOUR
+        )
+        if can_attempt:
+            # Do not exceed Ozon's 2/minute, 50/hour draft-create limit.
+            draft_history.append(now_ts)
+            st.session_state.method2_draft_history = draft_history
+            candidate["last_attempt_epoch"] = now_ts
+            create_individual_supply(
+                client, key, candidate,
+                date.fromisoformat(st.session_state.method2_window[0]),
+                date.fromisoformat(st.session_state.method2_window[1]),
+                st.session_state.method2_window[2],
+                st.session_state.method2_window[3],
+            )
+            if candidate["status"] == "RETRY":
+                candidate["next_retry_at"] = time.time() + RETRY_SECONDS
+            st.session_state.method2_next_attempt_at = time.time() + RUN_INTERVAL_SECONDS
     status_names = {
         "WAITING": "Ожидает", "RETRY": "Повторим", "CHECKING": "Проверяется",
         "SUBMITTING": "Отправляется", "VERIFYING": "Проверяется создание",
@@ -377,7 +398,7 @@ def queue_worker():
     created = sum(row["status"] == "CREATED" for row in queue)
     pending = sum(row["status"] in ("WAITING", "RETRY", "VERIFYING", "SUBMITTING") for row in queue)
     st.write(f"**Создано: {created} из {len(queue)}.** В очереди: {pending}.")
-    st.caption("Автопроверка каждые 3 минуты, ПОКА ЭТА ВКЛАДКА ОТКРЫТА. После закрытия сессии Streamlit очередь не гарантируется.")
+    st.caption("Сначала пробуем новые направления (не чаще одного раза в 40 секунд). Недоступные повторяем через 3 минуты, учитывая лимиты Ozon. Работает только при открытой сессии.")
     if st.button("Остановить повторные попытки", key="method2_stop_queue"):
         for job in queue:
             if job["status"] in ("WAITING", "RETRY"):
