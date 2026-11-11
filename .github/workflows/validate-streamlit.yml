@@ -22,7 +22,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Check Python syntax before using the dashboard
-        run: python3 -m py_compile streamlit_app.py method2_supply.py method2_state.py method1_state.py
+        run: python3 -m py_compile streamlit_app.py method2_supply.py method2_state.py method1_state.py method1_validation.py
       - name: Install test dependencies
         run: pip install -r requirements.txt
       - name: Test Method 2 with mocked Ozon
