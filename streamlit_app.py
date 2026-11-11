@@ -105,141 +105,269 @@ with tab_plan:
     st.divider()
     st.subheader("📊 Метод 2 — по географии продаж категории")
     st.caption("Распределение по долям продаж всей категории. Подходит и для новых товаров.")
-    geo_source = st.radio(
-        "Источник процентов", ["Ввести доли вручную", "Excel из Ozon"],
-        horizontal=True, key="geo_source",
-    )
-    geo = None
-    if geo_source == "Excel из Ozon":
-        category_file = st.file_uploader(
-            "Загрузи Excel: Аналитика категорий → География, «Мой магазин» выключен",
-            type=["xlsx"], key="category_geo_file",
-        )
-        if category_file is not None:
+    st.markdown("**Шаг 1. Выбери товар, для которого готовим поставку**")
+    st.caption("SKU Ozon и артикул продавца — разные идентификаторы. В поставку попадёт только выбранный SKU.")
+    if st.button("🔄 Загрузить товары из моего Ozon", key="category_load_products"):
+        cid = str(st.secrets.get("OZON_CLIENT_ID", "")).strip()
+        key = str(st.secrets.get("OZON_API_KEY", "")).strip()
+        if not cid or not key:
+            st.error("Нет OZON_CLIENT_ID / OZON_API_KEY в настройках панели.")
+        else:
             try:
-                raw = pd.read_excel(category_file, header=None)
-                if raw.shape[0] < 2 or raw.shape[1] < 2:
-                    raise ValueError(
-                        "Ozon выгрузил пустой отчёт (только период, без таблицы). "
-                        "Переключи «Источник процентов» на «Ввести доли вручную»."
+                products_by_sku = {}
+                missing = []
+                cursor = ""
+                truncated = True
+                for page_no in range(15):
+                    req = urllib.request.Request(
+                        "https://api-seller.ozon.ru/v3/product/list",
+                        data=json.dumps({
+                            "filter": {"visibility": "ALL"}, "last_id": cursor, "limit": 500,
+                        }).encode("utf-8"),
+                        headers={"Client-Id": cid, "Api-Key": key, "Content-Type": "application/json"},
+                        method="POST",
                     )
-                header_idx = next((
-                    i for i in range(min(len(raw), 40))
-                    if any("кластер доставки" in str(v).lower() for v in raw.iloc[i])
-                    and any("доля в категории" in str(v).lower() for v in raw.iloc[i])
-                ), None)
-                if header_idx is None:
-                    raise ValueError(
-                        "Не найдены столбцы «Кластер доставки» и «Доля в категории». "
-                        "Проверь тип отчёта или введи доли вручную."
+                    with urllib.request.urlopen(req, timeout=35) as response:
+                        payload = json.load(response)
+                    data = payload.get("result") or {}
+                    items = data.get("items") or []
+                    if not isinstance(items, list):
+                        raise ValueError("Ozon вернул неожиданный список товаров.")
+                    for item in items:
+                        if not isinstance(item, dict):
+                            continue
+                        raw_sku = item.get("sku")
+                        sku_values = raw_sku if isinstance(raw_sku, list) else [raw_sku]
+                        sku_values = [str(x).strip() for x in sku_values if str(x).strip().isdigit() and int(str(x).strip()) > 0]
+                        article = str(item.get("offer_id") or "").strip()
+                        name = str(item.get("name") or "").strip()
+                        if not sku_values and item.get("product_id"):
+                            missing.append(item)
+                        for sku_value in sku_values:
+                            products_by_sku[sku_value] = {
+                                "sku": sku_value, "offer_id": article, "name": name,
+                            }
+                    next_cursor = str(data.get("last_id") or "")
+                    if not items or not next_cursor or next_cursor == cursor:
+                        truncated = False
+                        break
+                    cursor = next_cursor
+                # Older Ozon responses might omit SKU from /v3/product/list.
+                # Resolve those IDs only through the dedicated product information API.
+                for start in range(0, len(missing), 500):
+                    batch = [x.get("product_id") for x in missing[start:start + 500] if x.get("product_id")]
+                    if not batch:
+                        continue
+                    req = urllib.request.Request(
+                        "https://api-seller.ozon.ru/v3/product/info/list",
+                        data=json.dumps({"product_id": batch}).encode("utf-8"),
+                        headers={"Client-Id": cid, "Api-Key": key, "Content-Type": "application/json"},
+                        method="POST",
                     )
-                headers = raw.iloc[header_idx].astype(str).str.strip().tolist()
-                geo = raw.iloc[header_idx + 1:].copy()
-                geo.columns = headers
-                geo = geo[["Кластер доставки", "Доля в категории"]].copy()
-                geo.columns = ["Кластер", "Доля, %"]
-                geo["Кластер"] = geo["Кластер"].fillna("").astype(str).str.strip()
-                def parse_percent(value):
-                    # Ozon exports numeric percentage cells as decimal fractions:
-                    # 0.201 means 20.1%. Its row 6 is a text description, not data.
-                    if pd.isna(value):
-                        return float("nan")
-                    try:
-                        if isinstance(value, str):
-                            v = value.replace(" ", "").replace("\\xa0", "").replace(",", ".").strip()
-                            if v.endswith("%"):
-                                return float(v[:-1])
-                            number = float(v)
-                        else:
-                            number = float(value)
-                        return number * 100 if 0 <= number <= 1 else number
-                    except (TypeError, ValueError):
-                        return float("nan")
-                geo["Доля, %"] = pd.to_numeric(
-                    geo["Доля, %"].map(parse_percent), errors="coerce"
-                )
-                geo = geo[(geo["Кластер"] != "") & geo["Доля, %"].notna()]
-            except (ValueError, KeyError, IndexError) as error:
-                st.warning(str(error))
-                geo = None
-            except Exception:
-                st.error("Не удалось открыть Excel. Можно ввести доли вручную.")
-                geo = None
-    else:
-        st.info("Введи проценты из столбца «Доля в категории» в Ozon. Можешь добавлять строки.")
-        initial_geo = pd.DataFrame([
-            {"Кластер": "Москва, МО и Дальние регионы", "Доля, %": 20.1},
-            {"Кластер": "Ростов", "Доля, %": 9.2},
-            {"Кластер": "Санкт-Петербург и СЗО", "Доля, %": 8.9},
-            {"Кластер": "Новосибирск", "Доля, %": 5.7},
-            {"Кластер": "Казань", "Доля, %": 5.4},
-            {"Кластер": "Екатеринбург", "Доля, %": 5.2},
-            {"Кластер": "Воронеж", "Доля, %": 5.1},
-            {"Кластер": "Беларусь", "Доля, %": 4.5},
-            {"Кластер": "Ярославль", "Доля, %": 4.2},
-        ])
-        st.caption("Первые строки заполнены по твоему скриншоту. Это НЕ все кластеры: добавь остальные перед расчётом.")
-        geo = st.data_editor(
-            initial_geo, num_rows="dynamic", hide_index=True, use_container_width=True,
-            column_config={
-                "Кластер": st.column_config.TextColumn("Кластер", required=True),
-                "Доля, %": st.column_config.NumberColumn("Доля, %", min_value=0., max_value=100., format="%.2f"),
-            },
-            key="category_manual_shares",
-        )
-    if geo is not None:
-        try:
-            geo = geo.copy()
-            geo["Кластер"] = geo["Кластер"].fillna("").astype(str).str.strip()
-            geo = geo[geo["Кластер"] != ""]
-            geo["Доля, %"] = pd.to_numeric(geo["Доля, %"], errors="coerce")
-            if geo.empty or geo["Доля, %"].isna().any() or (geo["Доля, %"] < 0).any() or (geo["Доля, %"] > 100).any():
-                raise ValueError("Проверь названия кластеров и проценты от 0 до 100.")
-            if geo["Кластер"].str.casefold().duplicated().any():
-                raise ValueError("Повторяются названия кластеров.")
-            share_total = float(geo["Доля, %"].sum())
-            if share_total > 100.2:
-                raise ValueError(f"Сумма долей {share_total:.2f}% — больше 100%. Проверь проценты.")
-            if share_total < 99.0:
-                st.warning(
-                    f"Введены не все кластеры: сумма долей {share_total:.1f}%, "
-                    "должна быть около 100%. Расчёт заблокирован, чтобы не исказить распределение."
-                )
-            excluded = (geo["Доля, %"] < 0.5) | geo["Кластер"].str.contains("самара|махачкала",case=False,na=False)
-            eligible = geo.loc[~excluded].copy()
-            st.caption(f"Кластеров в отчёте: {len(geo)}. В распределении: {len(eligible)}. Исключены доли ниже 0,5%, Самара и Махачкала.")
-            qty = st.number_input("Количество для метода 2", min_value=0, value=1650, step=1, key="category_geo_qty")
-            st.caption("Метод для новых товаров: остатки FBO не нужны. Распределяем только по долям рынка категории.")
-            if st.button(
-                "Рассчитать по категории", type="primary", key="category_geo_calculate_v3",
-                disabled=share_total < 99 or share_total > 100.2 or eligible.empty,
-            ):
-                try:
-                    plan = calculate([
-                        (row["Кластер"], float(row["Доля, %"]), 0.0)
-                        for _, row in eligible.iterrows()
-                    ], int(qty), 19)
-                    result = eligible[eligible["Кластер"].isin(plan)][["Кластер", "Доля, %"]].copy()
-                    result["Отправить, шт."] = result["Кластер"].map(plan).astype(int)
-                    result = result.sort_values("Отправить, шт.", ascending=False)
-                    st.session_state.category_geo_result_new = result
-                    st.session_state.category_geo_result_qty_new = int(qty)
-                except ValueError as error:
-                    st.session_state.pop("category_geo_result_new", None)
-                    st.error(str(error))
-            if "category_geo_result_new" in st.session_state:
-                result = st.session_state.category_geo_result_new
-                st.dataframe(result, hide_index=True, use_container_width=True)
-                st.metric("Распределено, шт.", int(result["Отправить, шт."].sum()))
-                st.download_button(
-                    "Скачать план по категории CSV", result.to_csv(index=False).encode("utf-8-sig"),
-                    "ozon_category_allocation.csv", "text/csv", key="category_download_v3",
-                )
-                st.warning("План предварительный, без проверки складов. При изменении исходных данных нажми «Рассчитать» снова. Заявки не создаются.")
-        except ValueError as error:
-            st.error(str(error))
+                    with urllib.request.urlopen(req, timeout=35) as response:
+                        info_response = json.load(response)
+                    for item in info_response.get("items", []) or []:
+                        stocks = item.get("stocks") or {}
+                        entries = stocks.get("stocks") or [] if isinstance(stocks, dict) else []
+                        skus = [str(x.get("sku") or "").strip() for x in entries if isinstance(x, dict)]
+                        raw_sku = item.get("sku")
+                        if raw_sku:
+                            skus.append(str(raw_sku))
+                        for sku_value in skus:
+                            if sku_value.isdigit() and int(sku_value) > 0:
+                                products_by_sku[sku_value] = {
+                                    "sku": sku_value,
+                                    "offer_id": str(item.get("offer_id") or "").strip(),
+                                    "name": str(item.get("name") or "").strip(),
+                                }
+                st.session_state.category_ozon_catalog = products_by_sku
+                st.session_state.category_ozon_catalog_truncated = truncated
+                st.success(f"Загружено товаров (SKU): {len(products_by_sku)}.")
+                if not products_by_sku:
+                    st.warning("Ozon не вернул ни одного товара с действующим SKU.")
+            except urllib.error.HTTPError as error:
+                st.error(f"Не получилось загрузить каталог Ozon: HTTP {error.code}.")
+            except Exception as error:
+                st.error(f"Не получилось загрузить товары: {error}")
 
-    st.divider()
+    product_catalog = st.session_state.get("category_ozon_catalog") or {}
+    if st.session_state.get("category_ozon_catalog_truncated"):
+        st.warning("Каталог большой: загружены не все карточки. Для полного списка потребуется дополнительная выгрузка.")
+    sku_options = [""] + sorted(product_catalog, key=lambda sku: (
+        (product_catalog[sku].get("offer_id") or "").casefold(), int(sku)
+    ))
+    selected_category_sku = st.selectbox(
+        "Выбери товар Ozon (артикул / SKU)",
+        sku_options,
+        format_func=lambda sku: (
+            "— Сначала выбери товар —" if not sku
+            else f"{product_catalog[sku].get('name') or product_catalog[sku].get('offer_id') or 'Товар'}"
+                 f" · артикул: {product_catalog[sku].get('offer_id') or '—'} · SKU {sku}"
+        ),
+        key="category_geo_product_choice",
+    )
+    previous_product = st.session_state.get("category_geo_previous_choice")
+    if previous_product != selected_category_sku:
+        for session_key in (
+            "category_geo_result_new", "category_geo_result_qty_new",
+            "category_geo_result_sku", "category_geo_result_offer_id",
+            "technical_draft_id", "technical_draft_signature", "technical_draft_info",
+            "preflight_export", "selected_cluster_slots",
+        ):
+            st.session_state.pop(session_key, None)
+        st.session_state.category_geo_previous_choice = selected_category_sku
+    if selected_category_sku:
+        current_product = product_catalog[selected_category_sku]
+        st.success(
+            f"Выбран товар: {current_product.get('name') or current_product.get('offer_id') or 'без названия'}"
+            f" · артикул продавца: {current_product.get('offer_id') or '—'}"
+            f" · SKU Ozon: {selected_category_sku}"
+        )
+        st.markdown("**Шаг 2. Загрузи Excel по географии категории или введи доли**")
+    else:
+        st.info("Сначала нажми «Загрузить товары из моего Ozon» и выбери нужный товар. Excel пока загружать нельзя.")
+
+    if selected_category_sku:
+        geo_source = st.radio(
+            "Источник процентов", ["Ввести доли вручную", "Excel из Ozon"],
+            horizontal=True, key="geo_source",
+        )
+        geo = None
+        if geo_source == "Excel из Ozon":
+            category_file = st.file_uploader(
+                "Загрузи Excel: Аналитика категорий → География, «Мой магазин» выключен",
+                type=["xlsx"], key="category_geo_file",
+            )
+            if category_file is not None:
+                try:
+                    raw = pd.read_excel(category_file, header=None)
+                    if raw.shape[0] < 2 or raw.shape[1] < 2:
+                        raise ValueError(
+                            "Ozon выгрузил пустой отчёт (только период, без таблицы). "
+                            "Переключи «Источник процентов» на «Ввести доли вручную»."
+                        )
+                    header_idx = next((
+                        i for i in range(min(len(raw), 40))
+                        if any("кластер доставки" in str(v).lower() for v in raw.iloc[i])
+                        and any("доля в категории" in str(v).lower() for v in raw.iloc[i])
+                    ), None)
+                    if header_idx is None:
+                        raise ValueError(
+                            "Не найдены столбцы «Кластер доставки» и «Доля в категории». "
+                            "Проверь тип отчёта или введи доли вручную."
+                        )
+                    headers = raw.iloc[header_idx].astype(str).str.strip().tolist()
+                    geo = raw.iloc[header_idx + 1:].copy()
+                    geo.columns = headers
+                    geo = geo[["Кластер доставки", "Доля в категории"]].copy()
+                    geo.columns = ["Кластер", "Доля, %"]
+                    geo["Кластер"] = geo["Кластер"].fillna("").astype(str).str.strip()
+                    def parse_percent(value):
+                        # Ozon exports numeric percentage cells as decimal fractions:
+                        # 0.201 means 20.1%. Its row 6 is a text description, not data.
+                        if pd.isna(value):
+                            return float("nan")
+                        try:
+                            if isinstance(value, str):
+                                v = value.replace(" ", "").replace("\\xa0", "").replace(",", ".").strip()
+                                if v.endswith("%"):
+                                    return float(v[:-1])
+                                number = float(v)
+                            else:
+                                number = float(value)
+                            return number * 100 if 0 <= number <= 1 else number
+                        except (TypeError, ValueError):
+                            return float("nan")
+                    geo["Доля, %"] = pd.to_numeric(
+                        geo["Доля, %"].map(parse_percent), errors="coerce"
+                    )
+                    geo = geo[(geo["Кластер"] != "") & geo["Доля, %"].notna()]
+                except (ValueError, KeyError, IndexError) as error:
+                    st.warning(str(error))
+                    geo = None
+                except Exception:
+                    st.error("Не удалось открыть Excel. Можно ввести доли вручную.")
+                    geo = None
+        else:
+            st.info("Введи проценты из столбца «Доля в категории» в Ozon. Можешь добавлять строки.")
+            initial_geo = pd.DataFrame([
+                {"Кластер": "Москва, МО и Дальние регионы", "Доля, %": 20.1},
+                {"Кластер": "Ростов", "Доля, %": 9.2},
+                {"Кластер": "Санкт-Петербург и СЗО", "Доля, %": 8.9},
+                {"Кластер": "Новосибирск", "Доля, %": 5.7},
+                {"Кластер": "Казань", "Доля, %": 5.4},
+                {"Кластер": "Екатеринбург", "Доля, %": 5.2},
+                {"Кластер": "Воронеж", "Доля, %": 5.1},
+                {"Кластер": "Беларусь", "Доля, %": 4.5},
+                {"Кластер": "Ярославль", "Доля, %": 4.2},
+            ])
+            st.caption("Первые строки заполнены по твоему скриншоту. Это НЕ все кластеры: добавь остальные перед расчётом.")
+            geo = st.data_editor(
+                initial_geo, num_rows="dynamic", hide_index=True, use_container_width=True,
+                column_config={
+                    "Кластер": st.column_config.TextColumn("Кластер", required=True),
+                    "Доля, %": st.column_config.NumberColumn("Доля, %", min_value=0., max_value=100., format="%.2f"),
+                },
+                key="category_manual_shares",
+            )
+        if geo is not None:
+            try:
+                geo = geo.copy()
+                geo["Кластер"] = geo["Кластер"].fillna("").astype(str).str.strip()
+                geo = geo[geo["Кластер"] != ""]
+                geo["Доля, %"] = pd.to_numeric(geo["Доля, %"], errors="coerce")
+                if geo.empty or geo["Доля, %"].isna().any() or (geo["Доля, %"] < 0).any() or (geo["Доля, %"] > 100).any():
+                    raise ValueError("Проверь названия кластеров и проценты от 0 до 100.")
+                if geo["Кластер"].str.casefold().duplicated().any():
+                    raise ValueError("Повторяются названия кластеров.")
+                share_total = float(geo["Доля, %"].sum())
+                if share_total > 100.2:
+                    raise ValueError(f"Сумма долей {share_total:.2f}% — больше 100%. Проверь проценты.")
+                if share_total < 99.0:
+                    st.warning(
+                        f"Введены не все кластеры: сумма долей {share_total:.1f}%, "
+                        "должна быть около 100%. Расчёт заблокирован, чтобы не исказить распределение."
+                    )
+                excluded = (geo["Доля, %"] < 0.5) | geo["Кластер"].str.contains("самара|махачкала",case=False,na=False)
+                eligible = geo.loc[~excluded].copy()
+                st.caption(f"Кластеров в отчёте: {len(geo)}. В распределении: {len(eligible)}. Исключены доли ниже 0,5%, Самара и Махачкала.")
+                qty = st.number_input("Количество для метода 2", min_value=0, value=1650, step=1, key="category_geo_qty")
+                st.caption("Метод для новых товаров: остатки FBO не нужны. Распределяем только по долям рынка категории.")
+                if st.button(
+                    "Рассчитать по категории", type="primary", key="category_geo_calculate_v3",
+                    disabled=share_total < 99 or share_total > 100.2 or eligible.empty,
+                ):
+                    try:
+                        plan = calculate([
+                            (row["Кластер"], float(row["Доля, %"]), 0.0)
+                            for _, row in eligible.iterrows()
+                        ], int(qty), 19)
+                        result = eligible[eligible["Кластер"].isin(plan)][["Кластер", "Доля, %"]].copy()
+                        result["Отправить, шт."] = result["Кластер"].map(plan).astype(int)
+                        result = result.sort_values("Отправить, шт.", ascending=False)
+                        st.session_state.category_geo_result_new = result
+                        st.session_state.category_geo_result_qty_new = int(qty)
+                    st.session_state.category_geo_result_sku = selected_category_sku
+                    st.session_state.category_geo_result_offer_id = current_product.get("offer_id", "")
+                    except ValueError as error:
+                        st.session_state.pop("category_geo_result_new", None)
+                        st.error(str(error))
+                if st.session_state.get("category_geo_result_sku") != selected_category_sku:
+                st.session_state.pop("category_geo_result_new", None)
+            if "category_geo_result_new" in st.session_state:
+                st.caption(f"Товар в плане: {current_product.get('offer_id') or '—'} · SKU Ozon {selected_category_sku}")
+                    result = st.session_state.category_geo_result_new
+                    st.dataframe(result, hide_index=True, use_container_width=True)
+                    st.metric("Распределено, шт.", int(result["Отправить, шт."].sum()))
+                    st.download_button(
+                        "Скачать план по категории CSV", result.to_csv(index=False).encode("utf-8-sig"),
+                        "ozon_category_allocation.csv", "text/csv", key="category_download_v3",
+                    )
+                    st.warning("План предварительный, без проверки складов. При изменении исходных данных нажми «Рассчитать» снова. Заявки не создаются.")
+            except ValueError as error:
+                st.error(str(error))
+    
+        st.divider()
     st.subheader("🐊 Быстрый расчёт по кластерам")
     st.caption("Пока Ozon не отдаёт географию продаж автоматически, введи продажи и остатки по кластерам вручную. Это предварительный расчёт, без создания поставок.")
     if "ozon_sales_rows" in st.session_state:
