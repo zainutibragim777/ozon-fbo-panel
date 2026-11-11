@@ -13,6 +13,7 @@ from io import BytesIO
 
 import pandas as pd
 import streamlit as st
+import method2_state as store
 
 BASE = "https://api-seller.ozon.ru"
 ORIGIN_ID = 1020005035056500
@@ -252,7 +253,7 @@ def _check_order_status(client, key, job):
         job["reason"] = "Статус требует повторной проверки: " + str(ex)[:120]
 
 
-def create_individual_supply(client, key, job, start_date, end_date, time_from, time_to):
+def create_individual_supply(client, key, job, start_date, end_date, time_from, time_to, before_submit=None):
     if job["status"] in ("CREATED", "VERIFYING", "NEEDS_REVIEW", "SUBMITTING"):
         return
     job["attempts"] += 1
@@ -297,6 +298,8 @@ def create_individual_supply(client, key, job, start_date, end_date, time_from, 
         # at most once per draft. Ambiguous network outcomes are not retried.
         job["status"] = "SUBMITTING"
         job["reason"] = "Отправляем заявку; повторы заблокированы до проверки результата."
+        if before_submit is not None:
+            before_submit(job)
         result = ozon(client, key, "/v2/draft/supply/create", {
             "draft_id": draft_id,
             "selected_cluster_warehouses": [selected],
@@ -318,6 +321,8 @@ def create_individual_supply(client, key, job, start_date, end_date, time_from, 
             return
         job["creation_draft_id"] = operation
         job["status"] = "VERIFYING"
+        if before_submit is not None:
+            before_submit(job)
         for _ in range(5):
             time.sleep(2)
             _check_order_status(client, key, job)
@@ -342,76 +347,49 @@ def create_individual_supply(client, key, job, start_date, end_date, time_from, 
             job["reason"] = str(error)[:200]
 
 
-@st.fragment(run_every=RUN_INTERVAL_SECONDS)
+@st.fragment(run_every=30)
 def queue_worker():
-    queue = st.session_state.get("method2_supply_queue") or []
-    if not queue:
+    plan = store.read_plan()
+    if not plan:
         return
-    st.subheader("6. Очередь поставок и повторные попытки")
-    client = str(st.secrets.get("OZON_CLIENT_ID") or "")
-    key = str(st.secrets.get("OZON_API_KEY") or "")
-    # Check submitted orders first. A submitted order is NEVER resubmitted.
-    verification = next((j for j in queue if j.get("status") == "VERIFYING" and j.get("creation_draft_id")), None)
-    if verification is not None:
-        _check_order_status(client, key, verification)
-    else:
-        now_ts = time.time()
-        waiting = [j for j in queue if j["status"] == "WAITING"]
-        retries = [
-            j for j in queue
-            if j["status"] == "RETRY" and now_ts >= j.get("next_retry_at", 0)
-        ]
-        candidate = (
-            waiting[0] if waiting
-            else min(retries, key=lambda j: j.get("last_attempt_epoch", 0)) if retries else None
-        )
-        draft_history = st.session_state.get("method2_draft_history") or []
-        draft_history = [stamp for stamp in draft_history if stamp > now_ts - 3600]
-        st.session_state.method2_draft_history = draft_history
-        can_attempt = (
-            candidate is not None
-            and now_ts >= st.session_state.get("method2_next_attempt_at", 0)
-            and len(draft_history) < MAX_DRAFTS_PER_HOUR
-        )
-        if can_attempt:
-            # Do not exceed Ozon's 2/minute, 50/hour draft-create limit.
-            draft_history.append(now_ts)
-            st.session_state.method2_draft_history = draft_history
-            candidate["last_attempt_epoch"] = now_ts
-            create_individual_supply(
-                client, key, candidate,
-                date.fromisoformat(st.session_state.method2_window[0]),
-                date.fromisoformat(st.session_state.method2_window[1]),
-                st.session_state.method2_window[2],
-                st.session_state.method2_window[3],
-            )
-            if candidate["status"] == "RETRY":
-                candidate["next_retry_at"] = time.time() + RETRY_SECONDS
-            st.session_state.method2_next_attempt_at = time.time() + RUN_INTERVAL_SECONDS
+    st.subheader("📦 Сохранённая очередь Ozon — не пропадает при обновлении страницы")
+    st.caption(
+        f"План №{plan['id']} · SKU {plan['identity']['sku']}"
+        f" · {len(plan['jobs'])} кластеров · "
+        f"создан {plan['created_at'][:16]} UTC"
+    )
     status_names = {
-        "WAITING": "Ожидает", "RETRY": "Повторим", "CHECKING": "Проверяется",
-        "SUBMITTING": "Отправляется", "VERIFYING": "Проверяется создание",
-        "CREATED": "✅ Создана", "NEEDS_REVIEW": "⚠️ Требует проверки",
+        "WAITING": "В очереди", "RETRY": "Повтор через 3 минуты",
+        "CHECKING": "Проверяем Ozon", "SUBMITTING": "Заявка отправляется",
+        "VERIFYING": "Проверяем номер Ozon", "CREATED": "✅ Создана",
+        "NEEDS_REVIEW": "⚠️ Проверить вручную", "STOPPED": "Остановлена",
     }
+    jobs = plan["jobs"]
     output = pd.DataFrame([{
-        "Кластер": job["name"], "SKU": job["sku"],
-        "Шт.": job["quantity"],
-        "Статус": status_names.get(job["status"], job["status"]),
-        "Попытки": job["attempts"],
-        "Номер Ozon": job.get("order_id") or "—",
-        "Причина": job.get("reason") or "",
-    } for job in queue])
+        "Кластер": j["name"], "SKU": j["sku"], "Шт.": j["quantity"],
+        "Статус": status_names.get(j["status"], j["status"]),
+        "Попыток": j.get("attempts", 0),
+        "Номер заявки Ozon": j.get("order_id") or "—",
+        "Причина": j.get("reason") or "",
+    } for j in jobs])
     st.dataframe(output, use_container_width=True, hide_index=True)
-    created = sum(row["status"] == "CREATED" for row in queue)
-    pending = sum(row["status"] in ("WAITING", "RETRY", "VERIFYING", "SUBMITTING") for row in queue)
-    st.write(f"**Создано: {created} из {len(queue)}.** В очереди: {pending}.")
-    st.caption("Сначала пробуем новые направления (не чаще одного раза в 40 секунд). Недоступные повторяем через 3 минуты, учитывая лимиты Ozon. Работает только при открытой сессии.")
-    if st.button("Остановить повторные попытки", key="method2_stop_queue"):
-        for job in queue:
-            if job["status"] in ("WAITING", "RETRY"):
-                job["status"] = "NEEDS_REVIEW"
-                job["reason"] = "Остановлено вручную."
-        st.success("Новые попытки остановлены. Созданные заявки не отменяются.")
+    created = sum(j["status"] == "CREATED" for j in jobs)
+    pending = sum(j["status"] in ("WAITING", "RETRY", "CHECKING", "VERIFYING", "SUBMITTING") for j in jobs)
+    st.write(f"**Создано {created}/{len(jobs)}** · ещё в обработке: {pending}.")
+    st.caption(
+        "Статусы сохраняются на сервере при обновлении вкладки. "
+        "Пока Streamlit-сервер работает, он продолжает очередь без открытой страницы."
+    )
+    st.warning(
+        "Важно: сервер Streamlit Cloud может перезапускаться и стирать локальные файлы. "
+        "Для гарантированной сохранности через деплой и перезапуск потребуется внешняя база данных. "
+        "Уже отправленные, но не подтверждённые заявки автоматически не дублируются."
+    )
+    if any(j["status"] in ("WAITING", "RETRY") for j in jobs) and not plan["stopped"]:
+        if st.button("Остановить дальнейшие попытки", key="method2_stop_persisted"):
+            store.stop_queue()
+            st.rerun()
+
 
 
 def render_method2(calculate):
