@@ -233,8 +233,9 @@ with tab_plan:
                 raise ValueError("Один кластер указан несколько раз. Объедини его в одну строку.")
             for field in ("Продажи, шт./день", "Остаток FBO, шт."):
                 manual_table[field] = pd.to_numeric(manual_table[field], errors="coerce")
-                if manual_table[field].isna().any() or (manual_table[field] < 0).any():
-                    raise ValueError(f"Проверь значения в столбце «{field}».")
+                if (manual_table[field].isna().any() or (manual_table[field] < 0).any()
+                        or not has_only_finite_numbers(manual_table[field])):
+                    raise ValueError(f"В столбце «{field}» есть пустые, отрицательные, бесконечные или нечисловые значения.")
             if (manual_table["Остаток FBO, шт."] % 1 != 0).any():
                 raise ValueError("Остатки должны быть целыми штуками.")
             excluded_cities = manual_table["Кластер"].str.contains("самара|махачкала", case=False, na=False)
