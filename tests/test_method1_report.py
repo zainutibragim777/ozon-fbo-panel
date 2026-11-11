@@ -21,7 +21,7 @@ rows = [
 assert find_method1_header_row(rows) == 5
 
 headers = rows[5]
-assert suggest_column(headers, patterns=("среднесут", "шт./день")) == headers[16]
+assert suggest_column(headers, patterns=("среднесут", "шт./день"), preferred_tokens=("шт", "штук"), excluded_tokens=("руб",)) == headers[16]
 assert suggest_column(
     headers,
     saved_choice=headers[9],
