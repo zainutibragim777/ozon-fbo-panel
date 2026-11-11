@@ -2,9 +2,10 @@
 import hmac
 import math
 import json
+import time
 import urllib.request
 import urllib.error
-from datetime import date, timedelta, datetime, time
+from datetime import date, timedelta, datetime, time, timezone
 from pathlib import Path
 import pandas as pd
 import streamlit as st
@@ -885,6 +886,137 @@ with tab_warehouses:
             st.success("Локальная проверка пройдена. Следующий этап: проверка возможности создания черновика через Ozon API.")
         else:
             st.warning("Есть незаполненные или неверные данные. К проверке в Ozon переходить нельзя.")
+        st.divider()
+        st.subheader("🚀 Одна поставка — без скриншотов и повторного ввода SKU")
+        st.caption("Все поля ниже берутся прямо из выбранного плана. Ничего не нужно присылать в чат.")
+        if ready_local and len(matches) > 0:
+            one_items = [row for row in matches if row["Статус"] == "Совпало"]
+            selected_one_index = st.selectbox(
+                "Кластер для пробной поставки",
+                range(len(one_items)),
+                format_func=lambda i: (
+                    str(one_items[i]["Кластер из плана"])
+                    + " · " + str(one_items[i]["Отправить, шт."]) + " шт."
+                ),
+                key="single_supply_cluster_index",
+            )
+            one_row = one_items[selected_one_index]
+            one_cluster_id = int(one_row["ID кластера Ozon"])
+            one_qty = int(one_row["Отправить, шт."])
+            one_sku = int(new_product_sku.strip())
+            one_signature = (one_sku, one_cluster_id, one_qty)
+            if st.session_state.get("single_supply_signature") != one_signature:
+                for old_key in ("single_supply_draft", "single_supply_slots", "single_supply_choice"):
+                    st.session_state.pop(old_key, None)
+                st.session_state.single_supply_signature = one_signature
+            st.info(
+                f"**SKU Ozon {one_sku}** · **{one_row['Кластер из плана']}**"
+                f" · **{one_qty} шт.** · Отгрузка: Казань Аэропорт Кроссдокинг"
+            )
+            if st.button("🔎 Проверить доступные даты Ozon для этой одной поставки", key="single_supply_check_slot"):
+                try:
+                    origin = origin_matches[0]
+                    typemap = {
+                        "WAREHOUSE_TYPE_SORTING_CENTER": "SORTING_CENTER",
+                        "WAREHOUSE_TYPE_DELIVERY_POINT": "DELIVERY_POINT",
+                        "WAREHOUSE_TYPE_ORDERS_RECEIVING_POINT": "ORDERS_RECEIVING_POINT",
+                        "WAREHOUSE_TYPE_CROSS_DOCK": "CROSS_DOCK",
+                    }
+                    origin_type = typemap.get(str(origin.get("warehouse_type") or ""))
+                    if not origin_type:
+                        raise ValueError("Неизвестный тип точки отгрузки. Проверь данные Ozon.")
+                    body = {
+                        "cluster_info": {
+                            "macrolocal_cluster_id": one_cluster_id,
+                            "items": [{"sku": one_sku, "quantity": one_qty}],
+                        },
+                        "deletion_sku_mode": "FULL",
+                        "delivery_info": {
+                            "drop_off_warehouse": {
+                                "warehouse_id": int(origin["warehouse_id"]),
+                                "warehouse_type": origin_type,
+                            },
+                            "type": "DROPOFF",
+                        },
+                    }
+                    created = ozon_reference_request("/v1/draft/crossdock/create", body)
+                    draft_id = int(created.get("draft_id") or 0)
+                    if not draft_id or created.get("errors"):
+                        raise ValueError("Ozon не принял технический черновик: " + str(created.get("errors") or [])[:500])
+                    info = {}
+                    for _ in range(7):
+                        time.sleep(3)
+                        info = ozon_reference_request("/v2/draft/create/info", {"draft_id": draft_id})
+                        if info.get("status") in ("SUCCESS", "FAILED"):
+                            break
+                    if info.get("status") != "SUCCESS" or info.get("errors"):
+                        raise ValueError("Ozon не подтвердил черновик: " + str(info.get("errors") or info.get("status"))[:300])
+                    selection = None
+                    for cluster in info.get("clusters", []) or []:
+                        if int(cluster.get("macrolocal_cluster_id") or 0) != one_cluster_id:
+                            continue
+                        for wh in cluster.get("warehouses", []) or []:
+                            if (wh.get("availability_status") or {}).get("state") != "FULL_AVAILABLE":
+                                continue
+                            storage = wh.get("storage_warehouse") or {}
+                            selection = {
+                                "macrolocal_cluster_id": one_cluster_id,
+                                "storage_warehouse_id": int(storage.get("warehouse_id") or 0),
+                            }
+                            break
+                    if selection is None:
+                        raise ValueError("Этот кластер сейчас недоступен в Ozon. Количество не меняем.")
+                    first_day = datetime.now(timezone(timedelta(hours=3))).date() + timedelta(days=1)
+                    times = ozon_reference_request("/v2/draft/timeslot/info", {
+                        "date_from": first_day.isoformat(),
+                        "date_to": (first_day + timedelta(days=13)).isoformat(),
+                        "draft_id": draft_id,
+                        "supply_type": "CROSSDOCK",
+                        "selected_cluster_warehouses": [selection],
+                    })
+                    raw = (times.get("result") or {}).get("drop_off_warehouse_timeslots") or {}
+                    if isinstance(raw, list):
+                        raw = raw[0] if raw else {}
+                    if not isinstance(raw, dict):
+                        raise ValueError("Ozon вернул неожиданный формат календаря.")
+                    slots = []
+                    for day in raw.get("days", []) or []:
+                        for slot in day.get("timeslots", []) or []:
+                            begin = slot.get("from_in_timezone")
+                            finish = slot.get("to_in_timezone")
+                            if begin and finish:
+                                slots.append({"from": str(begin), "to": str(finish)})
+                    slots.sort(key=lambda row: row["from"])
+                    st.session_state.single_supply_draft = draft_id
+                    st.session_state.single_supply_slots = slots
+                    st.session_state.single_supply_signature = one_signature
+                    st.success(f"Черновик Ozon №{draft_id}. Свободных интервалов: {len(slots)}.")
+                except urllib.error.HTTPError as error:
+                    st.error(f"Ozon вернул HTTP {error.code}. Заявка не создана, попробуй позже.")
+                except Exception as error:
+                    st.error(f"Проверка не завершилась: {error}")
+            slots_for_one = st.session_state.get("single_supply_slots") or []
+            if slots_for_one:
+                selected_slot = st.selectbox(
+                    "Время этой поставки (МСК)",
+                    range(len(slots_for_one)),
+                    format_func=lambda i: (
+                        slots_for_one[i]["from"].replace("T", " ")
+                        + " — " + slots_for_one[i]["to"].split("T")[-1][:5]
+                    ),
+                    key="single_supply_choice",
+                )
+                one_time = slots_for_one[selected_slot]
+                st.success(
+                    f"Подготовлено: SKU {one_sku}, кластер {one_row['Кластер из плана']},"
+                    f" {one_qty} шт., {one_time['from'].replace('T', ' ')}."
+                )
+                st.warning("Это выбранный технический черновик, НЕ созданная поставка. Настоящее оформление требует отдельного подтверждённого действия.")
+            else:
+                st.caption("Сначала нажми проверку дат: Ozon вернёт свежие слоты именно для выбранного SKU и одного кластера.")
+        else:
+            st.warning("Сначала выбери товар, рассчитай план и проверь соответствие кластеров Ozon.")
+
         preflight_signature = (
             source_key, new_product_sku.strip(), str(wish_date),
             tuple((str(row["ID кластера Ozon"]), int(row["Отправить, шт."])) for _, row in matched_df.iterrows()),
