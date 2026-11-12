@@ -55,6 +55,11 @@ from method1_multi_plan import combine_product_allocations
 from method2_supply import render_method2, queue_worker, catalog as ozon_catalog, cluster_ids as ozon_cluster_ids, _clean as clean_ozon_name
 from method1_supply import render_method1_queue
 import method1_supply_state as method1_supply_store
+# Streamlit may retain imported helper modules across a source redeploy. Refresh
+# this one once when a newer deployment expects methods missing from its cache.
+if not hasattr(method1_supply_store, "plan_is_open"):
+    import importlib
+    method1_supply_store = importlib.reload(method1_supply_store)
 
 tab_plan, tab_method2, tab_stocks, tab_sales, tab_rules, tab_warehouses = st.tabs(
     ["📊 Метод 1", "🚀 Метод 2", "📦 Остатки Ozon", "📈 Продажи Ozon", "⚙️ Правила", "🚚 Склады"]
