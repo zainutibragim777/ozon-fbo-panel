@@ -1,5 +1,5 @@
 """Several selected products must be combined into one row per cluster."""
-from method1_multi_plan import combine_product_allocations, cluster_product_matrix
+from method1_multi_plan import combine_product_allocations, cluster_product_rows
 
 plans = combine_product_allocations({
     "ARTICLE-A": {"East": 10, "West": 20},
@@ -16,9 +16,12 @@ assert by_cluster["East"]["items"] == [
 assert sum(row["Отправить, шт."] for row in plans) == 42
 assert len(plans) == 3  # one supply job per cluster, not one per product
 
-matrix = cluster_product_matrix(plans)
-east = next(row for row in matrix if row["Кластер"] == "East")
-assert east == {"Кластер": "East", "ARTICLE-A": 10, "ARTICLE-B": 5}
-assert all("Отправить, шт." not in row for row in matrix)
+product_rows = cluster_product_rows(plans)
+east = [row for row in product_rows if row["Кластер"] == "East"]
+assert east == [
+    {"Кластер": "East", "Товар": "ARTICLE-A", "Количество, шт.": 10},
+    {"Кластер": "East", "Товар": "ARTICLE-B", "Количество, шт.": 5},
+]
+assert all("Отправить, шт." not in row for row in product_rows)
 
 print("Method 1 multi-product cluster grouping: PASS")

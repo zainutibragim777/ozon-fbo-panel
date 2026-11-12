@@ -52,11 +52,11 @@ import method1_state as method1_store
 from method1_validation import has_only_finite_numbers
 from method1_report import read_method1_report, suggest_method1_column
 import method1_multi_plan as method1_multi_plan_helpers
-if not hasattr(method1_multi_plan_helpers, "cluster_product_matrix"):
+if not hasattr(method1_multi_plan_helpers, "cluster_product_rows"):
     import importlib
     method1_multi_plan_helpers = importlib.reload(method1_multi_plan_helpers)
 combine_product_allocations = method1_multi_plan_helpers.combine_product_allocations
-cluster_product_matrix = method1_multi_plan_helpers.cluster_product_matrix
+cluster_product_rows = method1_multi_plan_helpers.cluster_product_rows
 from method2_supply import render_method2, queue_worker, catalog as ozon_catalog, cluster_ids as ozon_cluster_ids, _clean as clean_ozon_name
 from method1_supply import render_method1_queue
 import method1_supply_state as method1_supply_store
@@ -257,7 +257,7 @@ with tab_plan:
                         st.session_state.plan = pd.DataFrame(display_rows)
                         st.session_state.plan_sku = cached_plan["sku"]
                         st.subheader("Сохранённый план: " + cached_plan["sku"])
-                        quantity_table = pd.DataFrame(cluster_product_matrix(display_rows))
+                        quantity_table = pd.DataFrame(cluster_product_rows(display_rows))
                         st.dataframe(quantity_table, use_container_width=True, hide_index=True)
                         st.download_button(
                             "Скачать план CSV",
