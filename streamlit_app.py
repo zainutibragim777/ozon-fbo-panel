@@ -352,42 +352,24 @@ with tab_plan:
                         if "method1_supply_time_start" not in st.session_state:
                             st.session_state.method1_supply_time_start = "08:00"
                             st.session_state.method1_supply_time_end = "22:00"
-                            st.session_state.method1_supply_time_next = "start"
-
-                        def choose_method1_hour(hour):
-                            if st.session_state.method1_supply_time_next == "start":
-                                if hour != "24:00":
-                                    st.session_state.method1_supply_time_start = hour
-                                    st.session_state.method1_supply_time_next = "end"
-                            elif hour <= st.session_state.method1_supply_time_start:
-                                st.session_state.method1_supply_time_start = hour
-                                st.session_state.method1_supply_time_next = "end"
-                            else:
-                                st.session_state.method1_supply_time_end = hour
-                                st.session_state.method1_supply_time_next = "start"
-
-                        st.caption(
-                            f"Время: **{st.session_state.method1_supply_time_start}–"
-                            f"{st.session_state.method1_supply_time_end}** (МСК). "
-                            + ("Сначала нажми время начала." if st.session_state.method1_supply_time_next == "start"
-                               else "Теперь нажми время окончания.")
+                        time_cols = st.columns(2)
+                        current_start = st.session_state.method1_supply_time_start
+                        if current_start not in slots[:-1]:
+                            current_start = "08:00"
+                            st.session_state.method1_supply_time_start = current_start
+                        time_from = time_cols[0].selectbox(
+                            "Начало, МСК", slots[:-1], index=slots[:-1].index(current_start),
+                            key="method1_supply_time_start",
                         )
-                        for row_start in range(0, len(slots), 6):
-                            hour_cols = st.columns(6, gap="small")
-                            for index, hour in enumerate(slots[row_start:row_start + 6]):
-                                hour_cols[index].button(
-                                    hour,
-                                    key=f"method1_supply_hour_{hour}",
-                                    type="primary" if hour in (
-                                        st.session_state.method1_supply_time_start,
-                                        st.session_state.method1_supply_time_end,
-                                    ) else "secondary",
-                                    on_click=choose_method1_hour,
-                                    args=(hour,),
-                                    use_container_width=True,
-                                )
-                        time_from = st.session_state.method1_supply_time_start
-                        time_to = st.session_state.method1_supply_time_end
+                        end_options = [slot for slot in slots if slot > time_from]
+                        current_end = st.session_state.method1_supply_time_end
+                        if current_end not in end_options:
+                            current_end = end_options[-1]
+                            st.session_state.method1_supply_time_end = current_end
+                        time_to = time_cols[1].selectbox(
+                            "Окончание, МСК", end_options, index=end_options.index(current_end),
+                            key="method1_supply_time_end",
+                        )
                         queue = method1_supply_store.read_plan()
                         queue_open = method1_supply_store.plan_is_open(queue)
                         if queue_open:
