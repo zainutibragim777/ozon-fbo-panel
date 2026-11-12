@@ -53,6 +53,21 @@ def read_plan():
         return _read(db)
 
 
+def items_for_job(job):
+    """Build Ozon's item list for current multi-SKU and legacy single-SKU jobs."""
+    items = job.get("items") or [{"sku": job.get("sku"), "quantity": job.get("quantity")}]
+    normalized = []
+    for item in items:
+        sku = int(item.get("sku") or 0)
+        quantity = int(item.get("quantity") or 0)
+        if sku <= 0 or quantity <= 0:
+            raise ValueError("У товара должен быть корректный Ozon SKU и количество больше нуля.")
+        normalized.append({"sku": sku, "quantity": quantity})
+    if not normalized:
+        raise ValueError("В поставке должен быть хотя бы один товар.")
+    return normalized
+
+
 def start_plan(signature, identity, rows, window):
     initialise()
     with _LOCK, _db() as db:
@@ -68,9 +83,34 @@ def start_plan(signature, identity, rows, window):
             ))
             plan_id = cursor.lastrowid
             for row in rows:
+                items = row.get("items") or [{
+                    "sku": int(identity["sku"]),
+                    "product": str(identity.get("article") or identity.get("name") or identity["sku"]),
+                    "quantity": int(row["Отправить, шт."]),
+                }]
+                grouped_items = {}
+                for item in items:
+                    sku = int(item["sku"])
+                    quantity = int(item["quantity"])
+                    if sku <= 0 or quantity <= 0:
+                        raise ValueError("У каждого товара должен быть действующий SKU и количество больше нуля.")
+                    entry = grouped_items.setdefault(sku, {"sku": sku, "products": [], "quantity": 0})
+                    product = str(item.get("product") or sku)
+                    if product not in entry["products"]:
+                        entry["products"].append(product)
+                    entry["quantity"] += quantity
+                items = [{
+                    "sku": entry["sku"],
+                    "product": ", ".join(entry["products"]),
+                    "quantity": entry["quantity"],
+                } for entry in grouped_items.values()]
+                if not items or any(item["quantity"] <= 0 for item in items):
+                    raise ValueError("В кластерной поставке должен быть хотя бы один товар с количеством больше нуля.")
                 job = {
                     "name": str(row["Кластер"]), "cluster_id": int(row["ID Ozon"]),
-                    "sku": int(identity["sku"]), "quantity": int(row["Отправить, шт."]),
+                    "sku": int(items[0]["sku"]),
+                    "items": items,
+                    "quantity": sum(item["quantity"] for item in items),
                     "attempts": 0, "status": "WAITING", "reason": "", "order_id": None,
                 }
                 db.execute("INSERT INTO job(plan_id,cluster_id,body) VALUES(?,?,?)", (
