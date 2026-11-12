@@ -51,7 +51,12 @@ from io import BytesIO
 import method1_state as method1_store
 from method1_validation import has_only_finite_numbers
 from method1_report import read_method1_report, suggest_method1_column
-from method1_multi_plan import combine_product_allocations, cluster_product_matrix
+import method1_multi_plan as method1_multi_plan_helpers
+if not hasattr(method1_multi_plan_helpers, "cluster_product_matrix"):
+    import importlib
+    method1_multi_plan_helpers = importlib.reload(method1_multi_plan_helpers)
+combine_product_allocations = method1_multi_plan_helpers.combine_product_allocations
+cluster_product_matrix = method1_multi_plan_helpers.cluster_product_matrix
 from method2_supply import render_method2, queue_worker, catalog as ozon_catalog, cluster_ids as ozon_cluster_ids, _clean as clean_ozon_name
 from method1_supply import render_method1_queue
 import method1_supply_state as method1_supply_store
