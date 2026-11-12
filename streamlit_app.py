@@ -384,8 +384,11 @@ with tab_plan:
                         time_from = st.session_state.method1_supply_time_start
                         time_to = st.session_state.method1_supply_time_end
                         queue = method1_supply_store.read_plan()
-                        if queue:
+                        queue_open = method1_supply_store.plan_is_open(queue)
+                        if queue_open:
                             st.warning("У Метода 1 уже есть отдельная сохранённая очередь. Новая не создаётся, чтобы не задублировать заявки.")
+                        elif queue:
+                            st.info("Предыдущая очередь Метода 1 завершена или остановлена. Можно рассчитать новый план.")
                         confirmed = st.checkbox(
                             f"Подтверждаю создание {len(mapped_rows)} заявок: {sum(row['Отправить, шт.'] for row in mapped_rows)} шт. всего, товаров в заказе — {len(selected_goods_by_product)}.",
                             key="method1_supply_confirm",
@@ -399,7 +402,7 @@ with tab_plan:
                         if st.button(
                             "🚀 СОЗДАТЬ ПОСТАВКИ МЕТОДА 1", type="primary",
                             key="method1_create_supplies",
-                            disabled=(bool(queue) or not confirmed or bool(unmapped_products) or bool(unmapped)
+                            disabled=(queue_open or not confirmed or bool(unmapped_products) or bool(unmapped)
                                       or not mapped_rows or not valid_window or not api_client or not api_key),
                         ):
                             rows_for_supply = [row for row in mapped_rows if row["ID Ozon"]]
