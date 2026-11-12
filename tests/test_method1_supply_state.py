@@ -56,3 +56,17 @@ with tempfile.TemporaryDirectory() as folder:
     assert all(job["status"] == "STOPPED" for job in stopped["jobs"])
 
 print("Method 1 supply queue persistence and duplicate protection: PASS")
+
+    # A finished queue does not block a new plan. Reusing an old signature
+    # still returns its original plan and never creates duplicate jobs.
+    next_plan, next_created = store.start_plan(
+        "method1-next-signature", identity, rows, window
+    )
+    assert next_created
+    assert next_plan["id"] != stopped["id"]
+    assert store.read_plan()["id"] == next_plan["id"]
+    old_plan, old_created = store.start_plan(
+        "method1-signature", identity, rows, window
+    )
+    assert not old_created
+    assert old_plan["id"] == stopped["id"]
