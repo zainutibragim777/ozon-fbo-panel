@@ -32,8 +32,18 @@ def initialise():
         db.execute("CREATE TABLE IF NOT EXISTS job (id INTEGER PRIMARY KEY, plan_id INTEGER NOT NULL, cluster_id INTEGER NOT NULL, body TEXT NOT NULL, UNIQUE(plan_id, cluster_id))")
 
 
-def _read(db):
-    row = db.execute("SELECT * FROM plan ORDER BY id DESC LIMIT 1").fetchone()
+def plan_is_open(plan):
+    """Keep unfinished or ambiguous jobs protected from a second queue."""
+    if not plan:
+        return False
+    finished = {"CREATED", "STOPPED"}
+    return any(job.get("status") not in finished for job in plan.get("jobs", []))
+
+def _read(db, plan_id=None):
+    if plan_id is None:
+        row = db.execute("SELECT * FROM plan ORDER BY id DESC LIMIT 1").fetchone()
+    else:
+        row = db.execute("SELECT * FROM plan WHERE id=?", (int(plan_id),)).fetchone()
     if not row:
         return None
     result = dict(row)
@@ -73,8 +83,12 @@ def start_plan(signature, identity, rows, window):
     with _LOCK, _db() as db:
         db.execute("BEGIN IMMEDIATE")
         try:
+            existing = db.execute("SELECT id FROM plan WHERE signature=?", (str(signature),)).fetchone()
+            if existing:
+                db.execute("COMMIT")
+                return _read(db, existing["id"]), False
             current = _read(db)
-            if current:
+            if plan_is_open(current):
                 db.execute("COMMIT")
                 return current, False
             cursor = db.execute("INSERT INTO plan(signature,identity,window,created_at) VALUES(?,?,?,?)", (
