@@ -23,23 +23,18 @@ def combine_product_allocations(product_allocations):
         })
     return sorted(rows, key=lambda row: (-row["Отправить, шт."], row["Кластер"]))
 
-def cluster_product_matrix(rows):
-    """Make a readable cluster-by-product table without hiding quantities in a sum."""
-    products = []
-    normalized_rows = []
+def cluster_product_rows(rows):
+    """Make one visible row per cluster and product, without an aggregate total."""
+    result = []
     for row in rows:
         items = row.get("items") or [{
             "product": row.get("product") or row.get("Товары") or "Товар",
             "quantity": row.get("Отправить, шт.", 0),
         }]
-        quantities = {}
         for item in items:
-            product = str(item["product"])
-            if product not in products:
-                products.append(product)
-            quantities[product] = quantities.get(product, 0) + int(item["quantity"])
-        normalized_rows.append((str(row["Кластер"]), quantities))
-    return [
-        {"Кластер": cluster, **{product: quantities.get(product, 0) for product in products}}
-        for cluster, quantities in normalized_rows
-    ]
+            result.append({
+                "Кластер": str(row["Кластер"]),
+                "Товар": str(item["product"]),
+                "Количество, шт.": int(item["quantity"]),
+            })
+    return result
