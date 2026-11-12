@@ -51,7 +51,7 @@ from io import BytesIO
 import method1_state as method1_store
 from method1_validation import has_only_finite_numbers
 from method1_report import read_method1_report, suggest_method1_column
-from method1_multi_plan import combine_product_allocations
+from method1_multi_plan import combine_product_allocations, cluster_product_matrix
 from method2_supply import render_method2, queue_worker, catalog as ozon_catalog, cluster_ids as ozon_cluster_ids, _clean as clean_ozon_name
 from method1_supply import render_method1_queue
 import method1_supply_state as method1_supply_store
@@ -252,14 +252,11 @@ with tab_plan:
                         st.session_state.plan = pd.DataFrame(display_rows)
                         st.session_state.plan_sku = cached_plan["sku"]
                         st.subheader("Сохранённый план: " + cached_plan["sku"])
-                        st.dataframe(
-                            st.session_state.plan[["Кластер", "Товары", "Отправить, шт."]],
-                            use_container_width=True, hide_index=True,
-                        )
-                        st.metric("Всего распределено", int(st.session_state.plan["Отправить, шт."].sum()))
+                        quantity_table = pd.DataFrame(cluster_product_matrix(display_rows))
+                        st.dataframe(quantity_table, use_container_width=True, hide_index=True)
                         st.download_button(
                             "Скачать план CSV",
-                            st.session_state.plan.to_csv(index=False).encode("utf-8-sig"),
+                            quantity_table.to_csv(index=False).encode("utf-8-sig"),
                             "ozon_fbo_plan.csv", "text/csv",
                         )
                         st.markdown("### Создать поставки по Методу 1")
@@ -377,7 +374,7 @@ with tab_plan:
                         elif queue:
                             st.info("Предыдущая очередь Метода 1 завершена или остановлена. Можно рассчитать новый план.")
                         confirmed = st.checkbox(
-                            f"Подтверждаю создание {len(mapped_rows)} заявок: {sum(row['Отправить, шт.'] for row in mapped_rows)} шт. всего, товаров в заказе — {len(selected_goods_by_product)}.",
+                            f"Подтверждаю создание {len(mapped_rows)} заявок для {len(selected_goods_by_product)} товаров.",
                             key="method1_supply_confirm",
                         )
                         valid_window = (
