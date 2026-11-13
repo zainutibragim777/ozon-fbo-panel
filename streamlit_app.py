@@ -105,6 +105,8 @@ with tab_plan:
                 "Продажи по", value=default_to, key="method1_kan_date_to",
             )
             if st.button("Получить аналитику из КАН", key="method1_fetch_kan"):
+                st.session_state.pop("method1_kan_frame", None)
+                st.session_state.pop("method1_kan_query", None)
                 try:
                     kan_payload = fetch_analytics(
                         kan_token, kan_shop_id, kan_date_from, kan_date_to,
