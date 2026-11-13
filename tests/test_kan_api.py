@@ -6,6 +6,8 @@ import kan_api
 
 
 class FakeResponse:
+    body = b'{"results": [{"sku": 1}]}'
+
     def __enter__(self):
         return self
 
@@ -13,7 +15,7 @@ class FakeResponse:
         return False
 
     def read(self):
-        return b'{"results": [{"sku": 1}]}'
+        return self.body
 
 
 def raises(expected, callback):
@@ -35,6 +37,16 @@ assert "shop_id=3064" in request.full_url
 assert "date__gte=2026-10-16" in request.full_url
 assert "date__lte=2026-11-12" in request.full_url
 assert payload == {"results": [{"sku": 1}]}
+
+with patch("kan_api.urlopen", return_value=FakeResponse()):
+    FakeResponse.body = b'{"next": "https://example.test/page-2", "results": [{"sku": 1}]}'
+    raises(
+        kan_api.KanApiError,
+        lambda: kan_api.fetch_analytics(
+            "secret-token", "3064", date(2026, 10, 16), date(2026, 11, 12),
+        ),
+    )
+    FakeResponse.body = b'{"results": [{"sku": 1}]}'
 
 raises(
     kan_api.KanApiError,
