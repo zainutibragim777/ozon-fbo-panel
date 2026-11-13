@@ -75,8 +75,165 @@ with tab_method2:
     render_method2(calculate)
     queue_worker()
 with tab_plan:
-    uploaded = st.file_uploader("Загрузи Excel или CSV с продажами и остатками", type=["xlsx", "csv"])
-    if uploaded is not None:
+    with st.expander("Загрузить данные из КАН (вместо Excel)", expanded=False):
+        from kan_api import KanApiError, fetch_analytics, records_to_frame
+
+        kan_token = str(st.secrets.get("KAN_API_TOKEN", "")).strip()
+        if not kan_token:
+            st.info(
+                "Чтобы подключить КАН, добавь токен API в Streamlit Secrets под именем "
+                "KAN_API_TOKEN. Токен не нужно присылать в чат."
+            )
+        else:
+            moscow_today = datetime.now(timezone(timedelta(hours=3))).date()
+            default_to = moscow_today - timedelta(days=1)
+            default_from = default_to - timedelta(days=27)
+            saved_shop_id = str(
+                method1_store.get_setting(
+                    "method1_kan_shop_id", st.secrets.get("KAN_SHOP_ID", "")
+                )
+            )
+            kan_shop_id = st.text_input(
+                "ID магазина в КАН", value=saved_shop_id, key="method1_kan_shop_id",
+                help="Можно посмотреть в разделе «Магазины» КАН.",
+            )
+            date_cols = st.columns(2)
+            kan_date_from = date_cols[0].date_input(
+                "Продажи с", value=default_from, key="method1_kan_date_from",
+            )
+            kan_date_to = date_cols[1].date_input(
+                "Продажи по", value=default_to, key="method1_kan_date_to",
+            )
+            if st.button("Получить аналитику из КАН", key="method1_fetch_kan"):
+                try:
+                    kan_payload = fetch_analytics(
+                        kan_token, kan_shop_id, kan_date_from, kan_date_to,
+                    )
+                    kan_frame = records_to_frame(kan_payload)
+                    if kan_frame.empty:
+                        st.session_state.pop("method1_kan_frame", None)
+                        st.error("КАН не вернул строк за этот магазин и период.")
+                    else:
+                        st.session_state.method1_kan_frame = kan_frame
+                        st.session_state.method1_kan_query = {
+                            "shop_id": kan_shop_id,
+                            "date_from": kan_date_from.isoformat(),
+                            "date_to": kan_date_to.isoformat(),
+                        }
+                        method1_store.set_setting("method1_kan_shop_id", kan_shop_id)
+                except KanApiError as error:
+                    st.error(str(error))
+                except Exception:
+                    st.error("Не удалось прочитать аналитику КАН. Проверь магазин и период.")
+
+            kan_frame = st.session_state.get("method1_kan_frame")
+            if isinstance(kan_frame, pd.DataFrame) and not kan_frame.empty:
+                st.success(
+                    f"Получено строк из КАН: {len(kan_frame)}. "
+                    "Проверь столбцы и сопоставь показатели перед расчётом."
+                )
+                st.dataframe(kan_frame.head(10), use_container_width=True, hide_index=True)
+                kan_columns = list(kan_frame.columns)
+                role_specs = [
+                    ("product", "Товар / артикул", "Название товара"),
+                    ("cluster", "Кластер", "Кластер"),
+                    ("daily_sales", "Среднесуточные продажи, шт./день", "Среднесуточные продажи, шт. в день"),
+                    ("fbo_stock", "Остаток FBO, шт.", "Остаток FBO, шт"),
+                ]
+                selected_kan_columns = {}
+                for role, title, target in role_specs:
+                    saved_choice = method1_store.get_setting("method1_kan_column_" + role)
+                    guessed = None
+                    if saved_choice in kan_columns:
+                        guessed = saved_choice
+                    else:
+                        normalized_names = [str(column).casefold().replace("ё", "е") for column in kan_columns]
+                        role_tokens = {
+                            "product": ("название товара", "артикул", "sku", "product"),
+                            "cluster": ("кластер", "cluster"),
+                            "daily_sales": ("среднесут", "шт./день", "шт в день", "units_per_day", "daily_sales"),
+                            "fbo_stock": ("остаток fbo", "fbo_stock", "fbo stock"),
+                        }
+                        guesses = [
+                            column for column, normalized_name in zip(kan_columns, normalized_names)
+                            if any(token in normalized_name for token in role_tokens[role])
+                        ]
+                        guessed = guesses[0] if len(guesses) == 1 else None
+                    selected_kan_columns[role] = st.selectbox(
+                        title, [None] + kan_columns,
+                        index=0 if guessed is None else kan_columns.index(guessed) + 1,
+                        format_func=lambda value: "Выбери столбец..." if value is None else str(value),
+                        key="method1_kan_column_" + role,
+                    )
+                sales_basis = st.radio(
+                    "Что означает выбранный столбец продаж?",
+                    ["Среднее за день, шт./день", "Всего продаж за выбранный период, шт."],
+                    index=None, horizontal=True, key="method1_kan_sales_basis",
+                )
+                if any(value is None for value in selected_kan_columns.values()):
+                    st.warning("Сопоставь товар, кластер, продажи и остаток FBO со столбцами КАН.")
+                elif len(set(selected_kan_columns.values())) != 4:
+                    st.warning("Для расчёта выбери четыре разных столбца.")
+                elif sales_basis is None:
+                    st.warning("Укажи, в каких единицах КАН вернул продажи.")
+                else:
+                    normalized_kan = kan_frame[
+                        [selected_kan_columns[role] for role, _, _ in role_specs]
+                    ].copy()
+                    normalized_kan.columns = [target for _, _, target in role_specs]
+                    if sales_basis == "Всего продаж за выбранный период, шт.":
+                        query = st.session_state.get("method1_kan_query", {})
+                        try:
+                            period_days = (
+                                date.fromisoformat(query["date_to"])
+                                - date.fromisoformat(query["date_from"])
+                            ).days + 1
+                        except (KeyError, ValueError, TypeError):
+                            period_days = 0
+                        if period_days <= 0:
+                            st.error("Не удалось определить продолжительность периода КАН.")
+                            normalized_kan = None
+                        else:
+                            normalized_kan["Среднесуточные продажи, шт. в день"] = (
+                                pd.to_numeric(
+                                    normalized_kan["Среднесуточные продажи, шт. в день"],
+                                    errors="coerce",
+                                ) / period_days
+                            )
+                    duplicate_keys = normalized_kan.duplicated(
+                        subset=["Название товара", "Кластер"], keep=False,
+                    ) if normalized_kan is not None else pd.Series(dtype=bool)
+                    if normalized_kan is None:
+                        pass
+                    elif duplicate_keys.any():
+                        st.error(
+                            "В КАН есть несколько строк для одного товара и кластера. "
+                            "Не буду складывать остатки или усреднять продажи наугад; "
+                            "сначала нужно уточнить формат этих строк."
+                        )
+                    elif st.button(
+                        "Использовать эти данные в Методе 1",
+                        type="primary", key="method1_use_kan_data",
+                    ):
+                        csv_bytes = normalized_kan.to_csv(index=False).encode("utf-8-sig")
+                        method1_store.save_report("KAN_аналитика.csv", csv_bytes)
+                        method1_store.set_setting(
+                            "method1_kan_columns", selected_kan_columns,
+                        )
+                        for role, column in selected_kan_columns.items():
+                            method1_store.set_setting("method1_kan_column_" + role, column)
+                        st.session_state.method1_kan_saved_report = True
+                        st.session_state.pop("method1_report_upload", None)
+                        st.session_state.pop("method1_kan_frame", None)
+                        st.success("Данные КАН сохранены. Метод 1 использует их как входные данные.")
+                        st.rerun()
+
+    uploaded = st.file_uploader(
+        "Загрузи Excel или CSV с продажами и остатками",
+        type=["xlsx", "csv"], key="method1_report_upload",
+    )
+    kan_report_was_saved = st.session_state.pop("method1_kan_saved_report", False)
+    if uploaded is not None and not kan_report_was_saved:
         report_hash, changed = method1_store.save_report(uploaded.name, uploaded.getvalue())
         if changed:
             st.success("Файл сохранён на сервере. При обновлении страницы не пропадёт.")
