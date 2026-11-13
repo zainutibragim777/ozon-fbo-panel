@@ -54,7 +54,7 @@ def fetch_analytics(token, shop_id, date_from, date_to):
         raise KanApiError("Укажи ID магазина КАН.")
     if date_from > date_to:
         raise KanApiError("Начало периода должно быть раньше окончания.")
-    return _get_json(
+    payload = _get_json(
         ANALYTICS_URL,
         token,
         {
@@ -63,6 +63,12 @@ def fetch_analytics(token, shop_id, date_from, date_to):
             "date__lte": date_to.isoformat(),
         },
     )
+    if isinstance(payload, dict) and payload.get("next"):
+        raise KanApiError(
+            "КАН вернул аналитику несколькими страницами. "
+            "Не использую неполную выгрузку для расчёта."
+        )
+    return payload
 
 
 def _find_rows(payload):
